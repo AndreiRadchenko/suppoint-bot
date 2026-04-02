@@ -20,10 +20,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram import F
 from aiogram.types.input_file import FSInputFile
 
-db = Database('ha_bot.db')
+config: Config = load_config()
+db = Database(config.db.path)
 
 router = Router()
-config: Config = load_config()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -514,6 +514,8 @@ async def show_rents_by_date(callback: CallbackQuery):
         rent_id = callback.data.replace("dock_to_rent_", "")
         rent = db.get_rent_by_id(rent_id)
 
+        sent_any = False
+
         pay_tipe = rent[9]
         pay_id = rent[10]
         print('pay_tipe', pay_tipe)
@@ -526,6 +528,7 @@ async def show_rents_by_date(callback: CallbackQuery):
             else:
                 await bot.send_photo(callback.from_user.id, pay_id, caption=f'Платіж до оренди №{rent_id}',
                                      parse_mode="Markdown")
+            sent_any = True
 
         comp_tipe = rent[15]
         comp_id = rent[16]
@@ -539,6 +542,7 @@ async def show_rents_by_date(callback: CallbackQuery):
             else:
                 await bot.send_photo(callback.from_user.id, comp_id, caption=f'Комплектація до оренди №{rent_id}',
                                      parse_mode="Markdown")
+            sent_any = True
 
         surcharge = db.get_surcharge_by_rent(rent_id)
         if surcharge and len(surcharge) > 0:
@@ -547,19 +551,24 @@ async def show_rents_by_date(callback: CallbackQuery):
 
             print('perlim_tipe', perlim_tipe)
             print('perlim_id', perlim_id)
-            if perlim_tipe == "document":
-                await bot.send_document(callback.from_user.id, perlim_id, caption=f'Доплата до оренди №{rent_id}',
-                                        parse_mode="Markdown")
-            else:
-                await bot.send_photo(callback.from_user.id, perlim_id, caption=f'Доплата до оренди №{rent_id}',
-                                     parse_mode="Markdown")
+            if perlim_id:
+                if perlim_tipe == "document":
+                    await bot.send_document(callback.from_user.id, perlim_id, caption=f'Доплата до оренди №{rent_id}',
+                                            parse_mode="Markdown")
+                else:
+                    await bot.send_photo(callback.from_user.id, perlim_id, caption=f'Доплата до оренди №{rent_id}',
+                                         parse_mode="Markdown")
+                sent_any = True
+
+        if not sent_any:
+            await callback.message.answer(f"Для оренди №{rent_id} не знайдено збережених документів/фото.")
 
         await callback.answer()
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
-
+#
 @router.callback_query(F.data.startswith("rent_date_"))
 async def show_rents_by_date(callback: CallbackQuery):
     date = callback.data.replace("rent_date_", "")
@@ -742,10 +751,8 @@ async def adm_reserve(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
-        state1 = await get_entity_state(locker[4], "http://77.52.246.0:8123",
-                                        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM")
-        state2 = await get_entity_state(locker[5], "http://77.52.246.0:8123",
-                                        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM")
+        state1 = await get_entity_state(locker[4], config.tg_bot.ha_url, config.tg_bot.ha_token)
+        state2 = await get_entity_state(locker[5], config.tg_bot.ha_url, config.tg_bot.ha_token)
         await call.message.answer(f'Статус для комірки {locker[2]} ID{locker[0]}:\n'
                                   f'🔓 Замок - {state1}\n'
                                   f'🚪 двері - {state2}')
@@ -844,8 +851,7 @@ async def get_photo(message: Message):
 @router.message(Command("get_info_1"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("sensor.gpio_sensor_1", "http://77.52.246.0:8123",
-                                       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM")
+        state = await get_entity_state("sensor.gpio_sensor_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
         print("sensor.gpio_sensor_1 Стан:", state)
     except Exception as e:
         log_exception(e)
@@ -855,8 +861,7 @@ async def start(message: Message):
 @router.message(Command("get_info_2"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("switch.local_switch_1", "http://77.52.246.0:8123",
-                                       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM")
+        state = await get_entity_state("switch.local_switch_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
         print("switch.local_switch_1 Стан:", state)
     except Exception as e:
         log_exception(e)
@@ -876,9 +881,7 @@ def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool
 
 
 async def switch_on_handler(locker_item):
-    success = toggle_switch("turn_on", "http://77.52.246.0:8123",
-                            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM",
-                            locker_item)
+    success = toggle_switch("turn_on", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
     if success:
         print("✅ Перемикач увімкнено!")
     else:
@@ -886,9 +889,7 @@ async def switch_on_handler(locker_item):
 
 
 async def switch_off_handler(locker_item):
-    success = toggle_switch("turn_off", "http://77.52.246.0:8123",
-                            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM",
-                            locker_item)
+    success = toggle_switch("turn_off", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
     if success:
         print("✅ Перемикач вимкнено!")
     else:

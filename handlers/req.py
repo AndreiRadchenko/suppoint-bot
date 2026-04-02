@@ -8,12 +8,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from config_data.config import Config, load_config
 from kb import kb
 from create_bot import bot
 from db import Database
 from helper.helper import log_exception, clear_messages
 
-db = Database('ha_bot.db')
+config: Config = load_config()
+db = Database(config.db.path)
 router = Router()
 
 
@@ -85,10 +87,21 @@ async def get_name(message: Message, state: FSMContext):
         log_exception(e)
 
 
-@router.message(RegisterFSM.phone, F.contact)
+@router.message(RegisterFSM.phone)
 async def get_phone(message: Message, state: FSMContext):
     try:
-        await state.update_data(phone=message.contact.phone_number)
+        # Accept both Telegram contact button and plain text input
+        phone_value = None
+        if message.contact:
+            phone_value = message.contact.phone_number
+        elif message.text:
+            phone_value = message.text.strip()
+
+        if not phone_value:
+            await message.answer("Будь ласка, надішліть номер телефону або використайте кнопку.", reply_markup=phone_kb)
+            return
+
+        await state.update_data(phone=phone_value)
         await state.set_state(RegisterFSM.consent)
 
         builder = InlineKeyboardBuilder()

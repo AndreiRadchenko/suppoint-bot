@@ -11,8 +11,23 @@ class TgBot:
 
 
 @dataclass
+class DatabaseConfig:
+    path: str
+
+
+@dataclass
+class PaymentConfig:
+    payer_name: str
+    iban: str
+    edrpou: str
+    purpose: str
+
+
+@dataclass
 class Config:
     tg_bot: TgBot
+    db: DatabaseConfig
+    payment: PaymentConfig
 
 
 def load_config(path: str | None = None) -> Config:
@@ -24,5 +39,14 @@ def load_config(path: str | None = None) -> Config:
             admin_ids=list(map(int, env.list('ADMINS'))),
             ha_url=env('HA_URL'),
             ha_token=env('HA_TOKEN'),
-        )
+        ),
+        db=DatabaseConfig(
+            path=env('DB_PATH'),
+        ),
+        payment=PaymentConfig(
+            payer_name=env('PAYMENT_PAYER_NAME'),
+            iban=env('PAYMENT_IBAN'),
+            edrpou=env('PAYMENT_EDRPOU'),
+            purpose=env('PAYMENT_PURPOSE'),
+        ),
     )

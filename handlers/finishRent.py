@@ -14,8 +14,8 @@ from helper.helper import clear_messages, log_exception, get_entity_state
 from kb import kb
 from config_data.config import Config, load_config
 
-db = Database('ha_bot.db')
 config: Config = load_config()
+db = Database(config.db.path)
 
 
 class RentFinishFSM(StatesGroup):
@@ -171,7 +171,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
         locker_id = info.get('locker_id')
         current_locker = db.get_locker_by_locker_id(locker_id)
         sensor = current_locker[5]
-        sensor_status = await get_entity_state(sensor, "http://77.52.246.0:8123","eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIwMGJjNTAwZjViNDk0YzZmOTFjMTYxZTljZTNmMTVjNCIsImlhdCI6MTc1MjI0MzE0NywiZXhwIjoyMDY3NjAzMTQ3fQ.PSxXmoQuJ3f-VK_dLovInSWKNK8hvh0vR8HugLoR8UM")
+        sensor_status = await get_entity_state(sensor, config.tg_bot.ha_url, config.tg_bot.ha_token)
         if sensor_status == 'close':
             data = await state.get_data()
             rent_id = data.get("rent_id")
@@ -232,11 +232,11 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     await callback.answer()
                 else:
                     price_url = generate_bank_qr_url(
-                        payer_name="ФОП Солдатенко Олексій Володимирович",
-                        iban="UA863220010000026004330123067",
+                        payer_name=config.payment.payer_name,
+                        iban=config.payment.iban,
                         amount=fin_pay,
-                        edrpou="2471811770",
-                        purpose="За послуги прокату спортивних товарів"
+                        edrpou=config.payment.edrpou,
+                        purpose=config.payment.purpose,
                     )
 
                     db.rent_update_surcharge(fin_pay, rent_id)

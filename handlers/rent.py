@@ -10,9 +10,9 @@ from create_bot import bot
 from db import Database
 import base64
 
-db = Database('ha_bot.db')
-router = Router()
 config: Config = load_config()
+db = Database(config.db.path)
+router = Router()
 
 
 class RentBoard(StatesGroup):
@@ -303,11 +303,11 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RentBoard.waiting_payment)
 
             price_url = generate_bank_qr_url(
-                payer_name="ФОП Солдатенко Олексій Володимирович",
-                iban="UA863220010000026004330123067",
+                payer_name=config.payment.payer_name,
+                iban=config.payment.iban,
                 amount=sum_price,
-                edrpou="2471811770",
-                purpose="За послуги прокату спортивних товарів"
+                edrpou=config.payment.edrpou,
+                purpose=config.payment.purpose,
             )
 
             btn1 = InlineKeyboardButton(text="💳 Перейти до оплат", url=price_url)

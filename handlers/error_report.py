@@ -12,8 +12,8 @@ from kb import kb
 from helper.helper import clear_messages
 from db import Database
 
-db = Database('ha_bot.db')
 config: Config = load_config()
+db = Database(config.db.path)
 router = Router()
 
 # ======= СТАНИ =======

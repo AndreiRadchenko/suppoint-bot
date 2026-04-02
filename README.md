@@ -13,6 +13,23 @@ rental_started - оренду розпочато
 ## Project Analysis: `ha_bot` — SUP Board Rental Telegram Bot
 
 ---
+venv: 
+```bash
+sudo apt-get install -y python3 python3-pip python3-venv
+sudo ln -s /usr/bin/python3 /usr/local/bin/python
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+python bot.py
+```
+in development, setup watchdog to restart bot on code change:
+```bash
+pip install watchdog
+watchmedo auto-restart --patterns="*.py" --recursive -- python bot.py
+```
+
+Docker:
+```bash
+docker run --rm -it --env-file .env suppoint-bot
+```
 
 ## What It Is
 

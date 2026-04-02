@@ -1,7 +1,10 @@
 from db import Database
 from create_bot import bot
 from helper.helper import log_exception
-db = Database('ha_bot.db')
+from config_data.config import Config, load_config
+
+config: Config = load_config()
+db = Database(config.db.path)
 
 
 async def timer():
