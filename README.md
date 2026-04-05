@@ -18,6 +18,7 @@ venv:
 sudo apt-get install -y python3 python3-pip python3-venv
 sudo ln -s /usr/bin/python3 /usr/local/bin/python
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+source .venv/bin/activate
 python bot.py
 ```
 in development, setup watchdog to restart bot on code change:
@@ -235,18 +236,36 @@ Create `/etc/systemd/system/ha_bot.service`:
 ```ini
 [Unit]
 Description=HA SUP Rental Bot
+After=network.target
 
 [Service]
-WorkingDirectory=/path/to/ha_bot-main
-ExecStart=/usr/bin/python3 bot.py
+Type=simple
+User=andrii
+WorkingDirectory=/home/andrii/suppoint-bot
+ExecStart=/home/andrii/suppoint-bot/.venv/bin/python /home/andrii/suppoint-bot/bot.py
 Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
 ```
 ```bash
-systemctl enable ha_bot && systemctl start ha_bot
+sudo systemctl daemon-reload
+sudo systemctl enable ha_bot
+sudo systemctl start ha_bot
+
+# service health
+sudo systemctl status ha_bot
+
+# follow logs
+journalctl -u ha_bot -f
+
+# restart after code updates
+sudo systemctl restart ha_bot
 ```
+
+With this setup, you do not need to run `source .venv/bin/activate` for production service restarts.
 
 ---
 
