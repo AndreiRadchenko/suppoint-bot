@@ -1,9 +1,61 @@
 import sqlite3
 import pandas as pd
+from datetime import datetime
 
 class Database:
     def __init__(self, db_file):
         self.db_path = db_file
+        self.ensure_payment_schema()
+
+    def _column_exists(self, cursor, table, column):
+        columns = cursor.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(col[1] == column for col in columns)
+
+    def ensure_payment_schema(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS payment_transactions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        payment_type TEXT NOT NULL,
+                        tg_id INTEGER NOT NULL,
+                        rent_id INTEGER,
+                        surcharge_id INTEGER,
+                        station_id INTEGER,
+                        locker_ids TEXT,
+                        amount_minor INTEGER NOT NULL,
+                        amount_grn REAL NOT NULL,
+                        reference TEXT NOT NULL,
+                        external_invoice_id TEXT UNIQUE NOT NULL,
+                        checkout_url TEXT,
+                        receipt_url TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        raw_payload TEXT,
+                        created_at TEXT NOT NULL,
+                        paid_at TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_reference ON payment_transactions(reference)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_invoice ON payment_transactions(external_invoice_id)")
+
+                if not self._column_exists(cursor, 'rent', 'payment_receipt_url'):
+                    cursor.execute("ALTER TABLE rent ADD COLUMN payment_receipt_url TEXT")
+                if not self._column_exists(cursor, 'rent', 'payment_invoice_id'):
+                    cursor.execute("ALTER TABLE rent ADD COLUMN payment_invoice_id TEXT")
+                if not self._column_exists(cursor, 'surcharge', 'topup_receipt_url'):
+                    cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
+                if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
+                    cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
+
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка ensure_payment_schema:", e)
 
     def user_exists(self, tg_id):
         try:
@@ -69,6 +121,18 @@ class Database:
                 conn.commit()
         except sqlite3.Error as e:
             print("Помилка request_status:", e)
+
+    def update_status_and_timer_for_rent_simple(self, tg_id, station_id, locker_id, status, timer, status_old):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE rent SET status = ? , timer = ? WHERE tg_id = ? AND station_id = ? AND select_locker_id = ? AND status = ?",
+                    (status, timer, tg_id, station_id, locker_id, status_old)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка update_status_and_timer_for_rent_simple:", e)
 
     def cancel_rent(self, status, rent_id):
         try:
@@ -349,7 +413,7 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 return cursor.execute(
-                    "SELECT * FROM rent WHERE status = 'Резервація' and tg_id = ?",
+                    "SELECT * FROM rent WHERE (status = 'Резервація' OR status = 'Очікує оплату') and tg_id = ?",
                     (tg_id,)).fetchall()
         except sqlite3.Error as e:
             print("Помилка в get_all_active_stations:", e)
@@ -369,6 +433,157 @@ class Database:
                 return cursor.execute("SELECT * FROM rent WHERE id = ?", (rent_id,)).fetchone()
         except sqlite3.Error as e:
             print("Помилка в get_rent_by_id:", e)
+
+    def get_last_rent_id(self, tg_id, station_id, locker_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                result = cursor.execute(
+                    "SELECT id FROM rent WHERE tg_id = ? AND station_id = ? AND select_locker_id = ? ORDER BY id DESC LIMIT 1",
+                    (tg_id, station_id, locker_id)
+                ).fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            print("Помилка в get_last_rent_id:", e)
+            return None
+
+    def create_payment_transaction(
+            self,
+            payment_type,
+            tg_id,
+            rent_id,
+            surcharge_id,
+            station_id,
+            locker_ids,
+            amount_minor,
+            amount_grn,
+            reference,
+            external_invoice_id,
+            checkout_url,
+            status='pending'
+    ):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.utcnow().isoformat()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO payment_transactions (
+                        payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
+                        amount_minor, amount_grn, reference, external_invoice_id,
+                        checkout_url, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
+                        amount_minor, amount_grn, reference, external_invoice_id,
+                        checkout_url, status, now, now
+                    )
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка create_payment_transaction:", e)
+
+    def get_payment_transaction_by_invoice_id(self, invoice_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM payment_transactions WHERE external_invoice_id = ?",
+                    (invoice_id,)
+                ).fetchone()
+        except sqlite3.Error as e:
+            print("Помилка get_payment_transaction_by_invoice_id:", e)
+
+    def get_pending_payment_transactions(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM payment_transactions WHERE status IN ('pending', 'processing')"
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_pending_payment_transactions:", e)
+            return []
+
+    def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.utcnow().isoformat()
+                paid_at = now if status == 'success' else None
+                cursor.execute(
+                    """
+                    UPDATE payment_transactions
+                    SET status = ?, receipt_url = COALESCE(?, receipt_url), raw_payload = ?,
+                        paid_at = COALESCE(?, paid_at), updated_at = ?
+                    WHERE external_invoice_id = ?
+                    """,
+                    (status, receipt_url, raw_payload, paid_at, now, invoice_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка update_payment_transaction_status:", e)
+
+    def get_rent_by_tg_station_and_locker_ids(self, tg_id, station_id, locker_ids, status):
+        try:
+            if not locker_ids:
+                return []
+            placeholders = ','.join('?' for _ in locker_ids)
+            query = (
+                f"SELECT * FROM rent WHERE tg_id = ? AND station_id = ? AND status = ? "
+                f"AND select_locker_id IN ({placeholders})"
+            )
+            params = [tg_id, station_id, status, *locker_ids]
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(query, params).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_rent_by_tg_station_and_locker_ids:", e)
+            return []
+
+    def save_rent_payment_receipt(self, rent_id, invoice_id, receipt_url):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE rent SET payment_invoice_id = ?, payment_receipt_url = ? WHERE id = ?",
+                    (invoice_id, receipt_url, rent_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка save_rent_payment_receipt:", e)
+
+    def save_surcharge_payment_receipt(self, surcharge_id, invoice_id, receipt_url):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET topup_invoice_id = ?, topup_receipt_url = ? WHERE id = ?",
+                    (invoice_id, receipt_url, surcharge_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка save_surcharge_payment_receipt:", e)
+
+    def get_or_create_surcharge_for_rent(self, rent_id, tg_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                row = cursor.execute("SELECT * FROM surcharge WHERE to_rent = ?", (str(rent_id),)).fetchone()
+                if row:
+                    return row[0]
+
+                create_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+                cursor.execute(
+                    "INSERT INTO surcharge (tg_id, file_type, file_id, date_create, status, to_rent) VALUES (?, ?, ?, ?, ?, ?)",
+                    (tg_id, 'none', 'none', create_date, 'Очікує оплату', str(rent_id))
+                )
+                conn.commit()
+                return cursor.lastrowid
+        except sqlite3.Error as e:
+            print("Помилка get_or_create_surcharge_for_rent:", e)
+            return None
 
     def rent_update_status(self, status, rent_id):
         try:

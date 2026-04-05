@@ -4,12 +4,15 @@ import logging
 from handlers import rent, req, finishRent, start, error_report
 from config_data.config import Config, load_config
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from services.payments import PaymentService, MonobankWebhookServer
 
 from helper.utilits_funk import timer
 
 config: Config = load_config()
 
 logger = logging.getLogger(__name__)
+payment_service = PaymentService()
+webhook_server = MonobankWebhookServer(payment_service)
 
 
 async def scheduler_funk():
@@ -20,6 +23,13 @@ async def scheduler_funk():
 
 #     # Запускаємо планувальник
     scheduler.start()
+
+
+async def webhook_funk():
+    await webhook_server.start()
+    logger.info('MONOBANK WEBHOOK SERVER ON-LINE')
+    while True:
+        await asyncio.sleep(3600)
 
 
 # Основна логіка бота
@@ -44,7 +54,8 @@ async def bot_funk():
 async def main():
     task1 = asyncio.create_task(bot_funk())
     task2 = asyncio.create_task(scheduler_funk())
-    await asyncio.gather(task1, task2)
+    task3 = asyncio.create_task(webhook_funk())
+    await asyncio.gather(task1, task2, task3)
 
 
 if __name__ == '__main__':

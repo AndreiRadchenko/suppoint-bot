@@ -21,6 +21,15 @@ class PaymentConfig:
     iban: str
     edrpou: str
     purpose: str
+    mono_test_token: str
+    mono_live_token: str
+    mono_mode: str
+    mono_webhook_host: str
+    mono_webhook_port: int
+    mono_webhook_path: str
+    mono_webhook_public_base: str
+    mono_redirect_url: str
+    mono_pubkey_cache_ttl: int
 
 
 @dataclass
@@ -48,5 +57,14 @@ def load_config(path: str | None = None) -> Config:
             iban=env('PAYMENT_IBAN'),
             edrpou=env('PAYMENT_EDRPOU'),
             purpose=env('PAYMENT_PURPOSE'),
+            mono_test_token=env.str('MONO_TEST_TOKEN', default=''),
+            mono_live_token=env.str('MONO_LIVE_TOKEN', default=''),
+            mono_mode=env.str('MONO_MODE', default='test'),
+            mono_webhook_host=env.str('MONO_WEBHOOK_HOST', default='0.0.0.0'),
+            mono_webhook_port=env.int('MONO_WEBHOOK_PORT', default=8080),
+            mono_webhook_path=env.str('MONO_WEBHOOK_PATH', default='/webhooks/monobank'),
+            mono_webhook_public_base=env.str('MONO_WEBHOOK_PUBLIC_BASE', default=''),
+            mono_redirect_url=env.str('MONO_REDIRECT_URL', default='https://t.me'),
+            mono_pubkey_cache_ttl=env.int('MONO_PUBKEY_CACHE_TTL', default=3600),
         ),
     )

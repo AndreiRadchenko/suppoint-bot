@@ -117,52 +117,11 @@ async def about_rent_reg(callback: CallbackQuery):
 async def check_pay(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        rents_on_inspection = db.get_rent_on_inspection()
-
-        if len(rents_on_inspection) > 0:
-
-            rent_count_by_user = defaultdict(int)
-            for rent in rents_on_inspection:
-                tg_id = rent[1]
-                rent_count_by_user[tg_id] += 1
-
-            for rent in rents_on_inspection:
-                tg_id = rent[1]
-
-                note = ""
-                if rent_count_by_user[tg_id] > 1:
-                    note = f"\n⚠️ У цього користувача *{rent_count_by_user[tg_id]}* активні оренди."
-
-                user = db.get_user_by_tg_id(tg_id)
-
-                text = (
-                    f'Аренда №{rent[0]} від {rent[11]}\n\n'
-                    f'Користувач {user[3]}\n'
-                    f'Телефон {user[4]}\n'
-                    f'Станція №{rent[2]}\n'
-                    f'Комірки {rent[3]}\n'
-                    f'Час {rent[4]} хв.\n'
-                    f'Сумма {rent[5]} грн.\n'
-                    f'{note}'
-                )
-
-                btn1 = InlineKeyboardButton(text="✅ Підтвердити", callback_data=f"rentOk:{rent[0]}")
-                btn2 = InlineKeyboardButton(text="Запит фото", callback_data=f"reSend:{rent[0]}")
-                btn3 = InlineKeyboardButton(text="Відмова", callback_data=f"rentNot:{rent[0]}")
-                apruv_menu = InlineKeyboardMarkup(inline_keyboard=[
-                    [btn1],
-                    [btn2],
-                    [btn3],
-                ])
-
-                if rent[9] == "document":
-                    await bot.send_document(callback.from_user.id, rent[10], caption=text, reply_markup=apruv_menu,
-                                            parse_mode="Markdown")
-                else:
-                    await bot.send_photo(callback.from_user.id, rent[10], caption=text, reply_markup=apruv_menu,
-                                         parse_mode="Markdown")
-        else:
-            await callback.message.answer('На перевірку нічого не має', reply_markup=kb.admin_menu)
+        await callback.message.answer(
+            'Автоматичне підтвердження оплат активовано.\n\n'
+            'Ручна перевірка первинних оплат більше не використовується.',
+            reply_markup=kb.admin_menu,
+        )
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -271,15 +230,7 @@ async def check_pay(callback: CallbackQuery):
 async def rentNot(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-
-        rent = db.get_rent_by_id(rent_id)
-
-        await bot.send_message(rent[1], 'Наданий вами документ не підтведив оплату')
-        db.rent_update_status('Відміна адміністратором', rent_id)
-        db.locker_status('Доступна оренда', rent[3])
-
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Ручне відхилення оплати вимкнено. Оплата підтверджується webhook Monobank.')
     except Exception as e:
         log_exception(e)
 
@@ -288,15 +239,7 @@ async def rentNot(call: CallbackQuery):
 async def reSend(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-
-        rent = db.get_rent_by_id(rent_id)
-
-        await bot.send_message(rent[1],
-                               'Наданий вами документ не є підтвердженням, надішліть боту коректне фото (час на повторне надсилання 5хв)')
-
-        db.rent_update_status_and_timer('Повторний запит', 20, rent_id)
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Повторний запит фото вимкнено. Оплата підтверджується webhook Monobank.')
     except Exception as e:
         log_exception(e)
 
@@ -305,22 +248,7 @@ async def reSend(call: CallbackQuery):
 async def rentOk(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-        rent = db.get_rent_by_id(rent_id)
-        db.rent_update_status_and_timer('Очікування відкриття', 20, rent_id)
-        db.locker_status("Очікування відкриття", rent[3])
-        db.rent_update_pay_1_status(rent_id)
-
-        await bot.send_message(rent[1],
-                               '✅ Оплату підтверджено — доступ активовано!\n\n'
-                               '🚪 Початок оренди:\n'
-                               ' Як отримати спорядження та почати оренду:\n'
-                               '1.📁 Перейдіть у розділ 🛶 Мої оренди\n'
-                               '2.🔘 Натисніть кнопку  🔓 Відкрити комірку\n'
-                               '3.⏱️ Якщо комірку не відкрито вручну — автоматичний початок оренди через 5 хвилин',
-                               reply_markup=kb.user_menu)
-
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Ручне підтвердження оплати вимкнено. Підтвердження відбувається автоматично через Monobank webhook.')
     except Exception as e:
         log_exception(e)
 
@@ -838,12 +766,7 @@ async def get_photo(message: Message):
                 await bot.send_message(admin, "✅ Користувач оновив платіний документ. Потрібо перевірити",
                                        reply_markup=kb.admin_menu)
         else:
-            for admin in config.tg_bot.admin_ids:
-                now = datetime.now()
-                create_date = now.strftime("%d.%m.%Y %H:%M")
-                db.add_new_surcharge(message.from_user.id, file_type, file_id, create_date)
-                text_perlimit = 'Користувач надіслав фото з доплатою, потрібно перевірити'
-                await bot.send_message(admin, text_perlimit)
+            await message.answer('Для оплати фото не потрібне. Після транзакції підтвердження приходить автоматично.')
     except Exception as e:
         log_exception(e)
 

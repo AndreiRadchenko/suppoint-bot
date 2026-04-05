@@ -9,9 +9,11 @@ from datetime import datetime
 from create_bot import bot
 from db import Database
 import base64
+from services.payments import PaymentService
 
 config: Config = load_config()
 db = Database(config.db.path)
+payment_service = PaymentService()
 router = Router()
 
 
@@ -289,7 +291,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
 
             price_text = '💳 Оплата:\n' \
                          '🔐 Для підтвердження вашої резервації, будь ласка, здійсніть оплату протягом 🕐 5 хвилин\n' \
-                         '📸 Надішліть скріншот або фото квитанції після оплати\n\n' \
+                         '⚡️ Після оплати підтвердження відбудеться автоматично\n\n' \
                          '📌 До сплати:\n'
             sum_price = 0
             for name, price_val in all_price:
@@ -302,12 +304,24 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
 
             await state.set_state(RentBoard.waiting_payment)
 
-            price_url = generate_bank_qr_url(
-                payer_name=config.payment.payer_name,
-                iban=config.payment.iban,
-                amount=sum_price,
-                edrpou=config.payment.edrpou,
-                purpose=config.payment.purpose,
+            for locker_id in selected:
+                db.locker_status("Очікує оплату", locker_id)
+                db.update_status_and_timer_for_rent_simple(
+                    callback.from_user.id,
+                    station_id,
+                    locker_id,
+                    'Очікує оплату',
+                    20,
+                    'Резервація',
+                )
+
+            destination = f"Оренда спорядження. Станція {station_id}. Тривалість {time} хв"
+            price_url = await payment_service.create_initial_invoice(
+                tg_id=callback.from_user.id,
+                station_id=station_id,
+                locker_ids=selected,
+                amount_grn=sum_price,
+                destination=destination,
             )
 
             btn1 = InlineKeyboardButton(text="💳 Перейти до оплат", url=price_url)
@@ -318,8 +332,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
             ])
 
             await callback.message.answer(price_text, reply_markup=pay_menu)
-
-            await state.set_state(RentBoard.waiting_payment_proof)
+            await state.clear()
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -329,36 +342,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
 @router.message(RentBoard.waiting_payment_proof, F.photo | F.document)
 async def payment_proof_received(message: Message, state: FSMContext):
     try:
-        data = await state.get_data()
-
-        file_type = None
-        file_id = None
-
-        if message.photo:
-            file_type = "photo"
-            file_id = message.photo[-1].file_id
-        elif message.document:
-            file_type = "document"
-            file_id = message.document.file_id
-
-        data["payment_file_type"] = file_type
-        data["payment_file_id"] = file_id
-
-        await state.update_data(payment_file_type=file_type, payment_file_id=file_id)
-
-        # Підтвердження
-        await message.answer("✅ Очікуйте перевірку менеджером (до 5 хвилин)")
-
-        data = await state.get_data()
-
-        for locker_id in data.get('selected_lockers'):
-            db.locker_status("Перевірка оплати", locker_id)
-            db.update_status_and_timer_for_rent(message.from_user.id, data.get("station_id"), locker_id, 'Перевірка оплати', 0, file_type, file_id, 'Резервація')
-
-        for admin in config.tg_bot.admin_ids:
-            await bot.send_message(admin, "✅ Новий запит на аренду. Потрібо перевірити", reply_markup=kb.admin_menu)
-
-        await state.clear()
+        await message.answer("Оплата для нових оренд підтверджується автоматично. Фото квитанції надсилати не потрібно ✅")
         await clear_messages(message.chat.id, message.message_id, 15)
     except Exception as e:
         log_exception(e)

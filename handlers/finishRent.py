@@ -13,9 +13,11 @@ from create_bot import bot
 from helper.helper import clear_messages, log_exception, get_entity_state
 from kb import kb
 from config_data.config import Config, load_config
+from services.payments import PaymentService
 
 config: Config = load_config()
 db = Database(config.db.path)
+payment_service = PaymentService()
 
 
 class RentFinishFSM(StatesGroup):
@@ -231,12 +233,11 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     await state.clear()
                     await callback.answer()
                 else:
-                    price_url = generate_bank_qr_url(
-                        payer_name=config.payment.payer_name,
-                        iban=config.payment.iban,
-                        amount=fin_pay,
-                        edrpou=config.payment.edrpou,
-                        purpose=config.payment.purpose,
+                    price_url = await payment_service.create_topup_invoice(
+                        rent_id=rent_id,
+                        tg_id=rent[1],
+                        amount_grn=fin_pay,
+                        destination=f"Доплата за оренду #{rent_id}",
                     )
 
                     db.rent_update_surcharge(fin_pay, rent_id)
@@ -249,7 +250,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     await callback.message.answer('💰Доплата:\n'
                                                   f'Мабуть, ваша прогулянка була надто крута 😎 Трохи перевищили оренду, тож просимо доплатити {fin_pay} грн 🪙\n'
                                                   f'⏱️ Загальна тривалість оренди склала {total_time} хв.\n'
-                                                  '📸 Надішліть, будь ласка, фото у бот для підтвердження.\n'
+                                                  '⚡️ Після оплати підтвердження відбудеться автоматично.\n'
                                                   '🙌 Дякуємо, що обираєте нас та чекаємо знову!'
                                                   , reply_markup=pay_menu)
 
