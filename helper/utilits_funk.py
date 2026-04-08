@@ -52,8 +52,8 @@ async def timer():
                         else:
                             db.valid_until_down(rent[0])
                 except Exception as e:
-                    await log_exception(e)
+                    log_exception(e)
         else:
             pass
     except Exception as e:
-        await log_exception(e, 'Проблема в боті')
+        log_exception(e)

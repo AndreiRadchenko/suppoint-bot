@@ -20,6 +20,26 @@ db = Database(config.db.path)
 payment_service = PaymentService()
 
 
+def _normalize_ha_url(url: str) -> str:
+    normalized = (url or '').strip()
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"http://{normalized}"
+
+
+def _station_ha_for_locker(locker):
+    station = db.get_station_by_id(locker[1])
+    if not station:
+        raise RuntimeError(f"Станцію {locker[1]} не знайдено")
+
+    ha_url = (station[7] or '').strip()
+    ha_token = (station[8] or '').strip()
+    if not ha_url or not ha_token:
+        raise RuntimeError(f"Для станції #{station[0]} не налаштований station-level Home Assistant")
+
+    return _normalize_ha_url(ha_url), ha_token
+
+
 class RentFinishFSM(StatesGroup):
     waiting_for_photo = State()
     waiting_for_confirmation = State()
@@ -173,8 +193,11 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
         locker_id = info.get('locker_id')
         current_locker = db.get_locker_by_locker_id(locker_id)
         sensor = current_locker[5]
-        sensor_status = await get_entity_state(sensor, config.tg_bot.ha_url, config.tg_bot.ha_token)
-        if sensor_status == 'close':
+        print('sensor', sensor)
+        ha_url, ha_token = _station_ha_for_locker(current_locker)
+        sensor_status = await get_entity_state(sensor, ha_url, ha_token)
+        print('sensor_status', sensor_status)
+        if sensor_status == 'close' or sensor_status == 'closed' or sensor_status == 'off' or sensor_status == 'False' or sensor_status == 'false':
             data = await state.get_data()
             rent_id = data.get("rent_id")
             rent = db.get_rent_by_id(rent_id)
@@ -186,6 +209,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                 if len(rent_counter) > 0:
                     await callback.message.answer(f"✅ Оренду №{rent_id} завершено. Дякуємо!\n\nУ вас залишилися оренди, які ще не завершено.", reply_markup=kb.user_menu)
                 else:
+
                     await callback.message.answer(f"✅ Оренду №{rent_id} завершено. Дякуємо!")
                 await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
                 await state.clear()

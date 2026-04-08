@@ -13,23 +13,19 @@ config: Config = load_config()
 logger = logging.getLogger(__name__)
 payment_service = PaymentService()
 webhook_server = MonobankWebhookServer(payment_service)
+scheduler = AsyncIOScheduler()
 
 
 async def scheduler_funk():
-# Створюємо планувальник
-    scheduler = AsyncIOScheduler()
-#
+    # Створюємо планувальник
     scheduler.add_job(timer, trigger="interval", seconds=15)
-
-#     # Запускаємо планувальник
+    # Запускаємо планувальник
     scheduler.start()
 
 
 async def webhook_funk():
     await webhook_server.start()
     logger.info('MONOBANK WEBHOOK SERVER ON-LINE')
-    while True:
-        await asyncio.sleep(3600)
 
 
 # Основна логіка бота
@@ -52,10 +48,15 @@ async def bot_funk():
 
 # Основна точка запуску всіх завдань
 async def main():
-    task1 = asyncio.create_task(bot_funk())
-    task2 = asyncio.create_task(scheduler_funk())
-    task3 = asyncio.create_task(webhook_funk())
-    await asyncio.gather(task1, task2, task3)
+    await scheduler_funk()
+    await webhook_funk()
+    try:
+        await bot_funk()
+    finally:
+        # Graceful shutdown for background services on SIGINT/SIGTERM.
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        await webhook_server.stop()
 
 
 if __name__ == '__main__':

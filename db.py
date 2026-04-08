@@ -2,6 +2,9 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 
+
+MAX_VISIBLE_STATIONS = 10
+
 class Database:
     def __init__(self, db_file):
         self.db_path = db_file
@@ -10,6 +13,13 @@ class Database:
     def _column_exists(self, cursor, table, column):
         columns = cursor.execute(f"PRAGMA table_info({table})").fetchall()
         return any(col[1] == column for col in columns)
+
+    def _table_exists(self, cursor, table):
+        row = cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        return bool(row)
 
     def ensure_payment_schema(self):
         try:
@@ -43,15 +53,43 @@ class Database:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_reference ON payment_transactions(reference)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_status ON payment_transactions(status)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_invoice ON payment_transactions(external_invoice_id)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_payment_transactions_station_id ON payment_transactions(station_id)")
 
-                if not self._column_exists(cursor, 'rent', 'payment_receipt_url'):
-                    cursor.execute("ALTER TABLE rent ADD COLUMN payment_receipt_url TEXT")
-                if not self._column_exists(cursor, 'rent', 'payment_invoice_id'):
-                    cursor.execute("ALTER TABLE rent ADD COLUMN payment_invoice_id TEXT")
-                if not self._column_exists(cursor, 'surcharge', 'topup_receipt_url'):
-                    cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
-                if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
-                    cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
+                if self._table_exists(cursor, 'stations'):
+                    if not self._column_exists(cursor, 'stations', 'is_active'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+                    if not self._column_exists(cursor, 'stations', 'is_visible_for_clients'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN is_visible_for_clients INTEGER NOT NULL DEFAULT 1")
+                    if not self._column_exists(cursor, 'stations', 'sort_order'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 100")
+                    if not self._column_exists(cursor, 'stations', 'ha_url_or_ip'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN ha_url_or_ip TEXT")
+                    if not self._column_exists(cursor, 'stations', 'ha_token'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN ha_token TEXT")
+                    if not self._column_exists(cursor, 'stations', 'auto_lock_delay_sec'):
+                        cursor.execute("ALTER TABLE stations ADD COLUMN auto_lock_delay_sec INTEGER NOT NULL DEFAULT 15")
+
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_stations_visibility ON stations(is_active, is_visible_for_clients, sort_order)"
+                    )
+
+                if self._table_exists(cursor, 'lockers'):
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lockers_station_status ON lockers(station_id, status)")
+
+                if self._table_exists(cursor, 'rent'):
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_rent_station_status ON rent(station_id, status)")
+
+                if self._table_exists(cursor, 'rent'):
+                    if not self._column_exists(cursor, 'rent', 'payment_receipt_url'):
+                        cursor.execute("ALTER TABLE rent ADD COLUMN payment_receipt_url TEXT")
+                    if not self._column_exists(cursor, 'rent', 'payment_invoice_id'):
+                        cursor.execute("ALTER TABLE rent ADD COLUMN payment_invoice_id TEXT")
+
+                if self._table_exists(cursor, 'surcharge'):
+                    if not self._column_exists(cursor, 'surcharge', 'topup_receipt_url'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
+                    if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
 
                 conn.commit()
         except sqlite3.Error as e:
@@ -154,6 +192,7 @@ class Database:
                     "SELECT * FROM rent WHERE status = 'Резервація' OR status = 'Очікує оплату' OR status = 'Очікування відкриття' OR status = 'Оренда' OR status = 'Очікує доплату'").fetchall()
         except sqlite3.Error as e:
             print("Помилка в get_all_actual_rent:", e)
+            return []
 
     def get_all_rent(self):
         try:
@@ -380,9 +419,164 @@ class Database:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                return cursor.execute("SELECT * FROM stations WHERE status = 'work'").fetchall()
+                return cursor.execute(
+                    """
+                    SELECT id, name, location, status
+                    FROM stations
+                    WHERE status = 'work' AND COALESCE(is_active, 1) = 1
+                    ORDER BY COALESCE(sort_order, 100), id
+                    """
+                ).fetchall()
         except sqlite3.Error as e:
             print("Помилка в get_all_active_stations:", e)
+
+    def get_visible_stations(self, limit=MAX_VISIBLE_STATIONS):
+        try:
+            if limit < 1:
+                return []
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    """
+                    SELECT id, name, location, status
+                    FROM stations
+                    WHERE status = 'work'
+                      AND COALESCE(is_active, 1) = 1
+                      AND COALESCE(is_visible_for_clients, 1) = 1
+                    ORDER BY COALESCE(sort_order, 100), id
+                    LIMIT ?
+                    """,
+                    (min(limit, MAX_VISIBLE_STATIONS),),
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка в get_visible_stations:", e)
+            return []
+
+    def get_station_admin_list(self, include_inactive=True):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                query = (
+                    "SELECT id, name, location, status, COALESCE(is_active, 1), "
+                    "COALESCE(is_visible_for_clients, 1), COALESCE(sort_order, 100) "
+                    "FROM stations"
+                )
+                params = ()
+                if not include_inactive:
+                    query += " WHERE COALESCE(is_active, 1) = 1"
+                query += " ORDER BY COALESCE(sort_order, 100), id"
+                return cursor.execute(query, params).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка в get_station_admin_list:", e)
+            return []
+
+    def get_station_by_id(self, station_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    """
+                    SELECT id, name, location, status,
+                           COALESCE(is_active, 1), COALESCE(is_visible_for_clients, 1),
+                           COALESCE(sort_order, 100), ha_url_or_ip, ha_token,
+                           COALESCE(auto_lock_delay_sec, 15)
+                    FROM stations
+                    WHERE id = ?
+                    """,
+                    (station_id,),
+                ).fetchone()
+        except sqlite3.Error as e:
+            print("Помилка в get_station_by_id:", e)
+            return None
+
+    def count_visible_stations(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                row = cursor.execute(
+                    "SELECT COUNT(*) FROM stations WHERE COALESCE(is_visible_for_clients, 1) = 1"
+                ).fetchone()
+                return row[0] if row else 0
+        except sqlite3.Error as e:
+            print("Помилка в count_visible_stations:", e)
+            return 0
+
+    def update_station_visibility(self, station_id, visible):
+        try:
+            visible_int = 1 if visible else 0
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+
+                current = cursor.execute(
+                    "SELECT COALESCE(is_visible_for_clients, 1) FROM stations WHERE id = ?",
+                    (station_id,),
+                ).fetchone()
+                if not current:
+                    return False, "Станцію не знайдено"
+
+                already_visible = int(current[0]) == 1
+                if visible_int == 1 and not already_visible:
+                    visible_count = cursor.execute(
+                        "SELECT COUNT(*) FROM stations WHERE COALESCE(is_visible_for_clients, 1) = 1"
+                    ).fetchone()[0]
+                    if visible_count >= MAX_VISIBLE_STATIONS:
+                        return False, f"Максимум {MAX_VISIBLE_STATIONS} видимих станцій"
+
+                cursor.execute(
+                    "UPDATE stations SET is_visible_for_clients = ? WHERE id = ?",
+                    (visible_int, station_id),
+                )
+                conn.commit()
+                return True, "OK"
+        except sqlite3.Error as e:
+            print("Помилка в update_station_visibility:", e)
+            return False, "Помилка БД"
+
+    def update_station_activity(self, station_id, active):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE stations SET is_active = ? WHERE id = ?",
+                    (1 if active else 0, station_id),
+                )
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            print("Помилка в update_station_activity:", e)
+            return False
+
+    def update_station_sort_order(self, station_id, sort_order):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE stations SET sort_order = ? WHERE id = ?",
+                    (int(sort_order), station_id),
+                )
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            print("Помилка в update_station_sort_order:", e)
+            return False
+
+    def update_station_ha_config(self, station_id, ha_url_or_ip, ha_token, auto_lock_delay_sec=15):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE stations
+                    SET ha_url_or_ip = ?, ha_token = ?, auto_lock_delay_sec = ?
+                    WHERE id = ?
+                    """,
+                    (ha_url_or_ip.strip(), ha_token.strip(), int(auto_lock_delay_sec), station_id),
+                )
+                conn.commit()
+                return True
+        except sqlite3.Error as e:
+            print("Помилка в update_station_ha_config:", e)
+            return False
 
     def get_all_available_lockers(self, station_id):
         try:

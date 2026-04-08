@@ -1,5 +1,6 @@
 import json
 import hashlib
+import logging
 from base64 import b64decode
 from datetime import datetime, timedelta
 from typing import Optional
@@ -79,8 +80,10 @@ class PaymentService:
         amount_grn: float,
         destination: str,
     ) -> str:
+        self._validate_station_lockers(station_id, locker_ids)
         amount_minor = int(amount_grn * 100)
         reference = f"rent-{tg_id}-{int(datetime.utcnow().timestamp())}"
+        webhook_url = self._webhook_public_url()
         payload = {
             "amount": amount_minor,
             "merchantPaymInfo": {
@@ -88,8 +91,9 @@ class PaymentService:
                 "destination": destination,
             },
             "redirectUrl": self.config.payment.mono_redirect_url,
-            "webHookUrl": self._webhook_public_url(),
         }
+        if webhook_url:
+            payload["webHookUrl"] = webhook_url
 
         result = await self.client.create_invoice(payload)
 
@@ -116,9 +120,31 @@ class PaymentService:
 
         return result["pageUrl"]
 
+    def _validate_station_lockers(self, station_id: int, locker_ids: list[int]) -> None:
+        if not locker_ids:
+            raise ValueError("locker_ids must not be empty")
+
+        normalized = [int(locker_id) for locker_id in locker_ids]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("locker_ids must be unique")
+
+        station = self.db.get_station_by_id(station_id)
+        if not station:
+            raise ValueError(f"station_id {station_id} not found")
+
+        for locker_id in normalized:
+            locker = self.db.get_locker_by_locker_id(locker_id)
+            if not locker:
+                raise ValueError(f"locker_id {locker_id} not found")
+            if int(locker[1]) != int(station_id):
+                raise ValueError(
+                    f"locker_id {locker_id} belongs to station {locker[1]}, expected {station_id}"
+                )
+
     async def create_topup_invoice(self, rent_id: int, tg_id: int, amount_grn: float, destination: str) -> str:
         amount_minor = int(amount_grn * 100)
         reference = f"topup-{rent_id}-{int(datetime.utcnow().timestamp())}"
+        webhook_url = self._webhook_public_url()
         payload = {
             "amount": amount_minor,
             "merchantPaymInfo": {
@@ -126,8 +152,9 @@ class PaymentService:
                 "destination": destination,
             },
             "redirectUrl": self.config.payment.mono_redirect_url,
-            "webHookUrl": self._webhook_public_url(),
         }
+        if webhook_url:
+            payload["webHookUrl"] = webhook_url
         result = await self.client.create_invoice(payload)
 
         surcharge_id = self.db.get_or_create_surcharge_for_rent(rent_id, tg_id)
@@ -149,16 +176,22 @@ class PaymentService:
 
         return result["pageUrl"]
 
-    def _webhook_public_url(self) -> str:
+    def _webhook_public_url(self) -> Optional[str]:
         public_base = (self.config.payment.mono_webhook_public_base or '').strip().rstrip('/')
         path = self.config.payment.mono_webhook_path
         if public_base:
-            return f"{public_base}{path}"
+            if public_base.startswith("https://"):
+                return f"{public_base}{path}"
+            logging.warning(
+                "MONO_WEBHOOK_PUBLIC_BASE must start with https://, skipping webHookUrl: %s",
+                public_base,
+            )
+            return None
 
         host = self.config.payment.mono_webhook_host
-        port = self.config.payment.mono_webhook_port
         if host in {"0.0.0.0", "127.0.0.1", "localhost"}:
-            return f"http://localhost:{port}{path}"
+            # Monobank rejects localhost/private callback URLs.
+            return None
         return f"https://{host}{path}"
 
     async def process_webhook_payload(self, payload: dict, raw_body: bytes):

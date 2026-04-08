@@ -341,6 +341,128 @@ async def locker_status(callback: CallbackQuery):
         print(f"🚨 Загальна помилка: {e}")
 
 
+def _station_manage_keyboard(station_id: int, is_active: bool, is_visible: bool) -> InlineKeyboardMarkup:
+    next_visibility = 0 if is_visible else 1
+    next_active = 0 if is_active else 1
+    vis_label = "🙈 Приховати для клієнтів" if is_visible else "👁 Показати для клієнтів"
+    active_label = "⏸ Деактивувати" if is_active else "✅ Активувати"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=vis_label, callback_data=f"station_toggle_vis:{station_id}:{next_visibility}")],
+        [InlineKeyboardButton(text=active_label, callback_data=f"station_toggle_active:{station_id}:{next_active}")],
+        [InlineKeyboardButton(text="🔙 До станцій", callback_data="station_management")],
+    ])
+
+
+@router.callback_query(F.data == "station_management")
+async def station_management(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        stations = db.get_station_admin_list(include_inactive=True)
+        if not stations:
+            await callback.message.answer("Станції не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        buttons = []
+        for station in stations:
+            station_id, name, location, status, is_active, is_visible, sort_order = station
+            vis_icon = "👁" if is_visible else "🙈"
+            active_icon = "✅" if is_active else "⏸"
+            label = f"{active_icon}{vis_icon} #{station_id} {name} - {location} ({status})"
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"station_manage:{station_id}")])
+
+        buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.answer("🏢 Керування станціями:", reply_markup=keyboard)
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_manage:"))
+async def station_manage(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        station_id = int(callback.data.split(":")[1])
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        is_active = bool(station[4])
+        is_visible = bool(station[5])
+        sort_order = station[6]
+        station_text = (
+            f"🏢 Станція #{station[0]}\n"
+            f"Назва: {station[1]}\n"
+            f"Локація: {station[2]}\n"
+            f"Статус роботи: {station[3]}\n"
+            f"Активна: {'так' if is_active else 'ні'}\n"
+            f"Видима для клієнта: {'так' if is_visible else 'ні'}\n"
+            f"Порядок: {sort_order}"
+        )
+        await callback.message.answer(
+            station_text,
+            reply_markup=_station_manage_keyboard(station_id, is_active, is_visible),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_toggle_vis:"))
+async def station_toggle_visibility(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        _, station_id_raw, visible_raw = callback.data.split(":")
+        station_id = int(station_id_raw)
+        target_visible = visible_raw == "1"
+
+        ok, message = db.update_station_visibility(station_id, target_visible)
+        if not ok:
+            await callback.message.answer(f"⚠️ {message}")
+            return
+
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        await callback.message.answer(
+            f"Видимість станції #{station_id} оновлено: {'видима' if target_visible else 'прихована'}",
+            reply_markup=_station_manage_keyboard(station_id, bool(station[4]), bool(station[5])),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_toggle_active:"))
+async def station_toggle_active(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        _, station_id_raw, active_raw = callback.data.split(":")
+        station_id = int(station_id_raw)
+        target_active = active_raw == "1"
+
+        if not db.update_station_activity(station_id, target_active):
+            await callback.message.answer("⚠️ Не вдалося оновити активність станції")
+            return
+
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        await callback.message.answer(
+            f"Активність станції #{station_id} оновлено: {'активна' if target_active else 'неактивна'}",
+            reply_markup=_station_manage_keyboard(station_id, bool(station[4]), bool(station[5])),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
 @router.callback_query(F.data == "rent_by_day")
 async def rent_by_day(callback: CallbackQuery):
     try:
@@ -594,13 +716,13 @@ async def openLocker(call: CallbackQuery):
 
                 if int(rent[0]) == int(rent_id):
                     try:
-                        await switch_on_handler(locker[4])
+                        await switch_on_handler(locker_id)
                     except Exception as e:
                         print(f"🚨 Помилка при відкритті комірки: {e}")
                         retry_keyboard = InlineKeyboardMarkup(
                             inline_keyboard=[
-                                [InlineKeyboardButton("🔁 Спробувати ще раз", callback_data=f"openLocker:{rent_id}")],
-                                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main_menu")]
+                                [InlineKeyboardButton(text="🔁 Спробувати ще раз", callback_data=f"openLocker:{rent_id}")],
+                                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")]
                             ]
                         )
                         await call.message.answer(
@@ -614,7 +736,7 @@ async def openLocker(call: CallbackQuery):
                         db.rent_update_status_and_timer('Оренда', int(rent[4]) * 4, rent[0])
                         db.locker_status("Оренда", rent[3])
                     await call.message.answer('Комірку відкрито', reply_markup=kb.user_menu)
-                    asyncio.create_task(delayed_switch_off(locker[4]))
+                    asyncio.create_task(delayed_switch_off(locker_id))
         else:
             await call.message.answer('Ця оренда закінчена чи більш не актуальна')
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
@@ -628,9 +750,8 @@ async def adm_openLocker(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
-        locker = db.get_locker_by_locker_id(locker_id)
-        await switch_on_handler(locker[4])
-        asyncio.create_task(delayed_switch_off(locker[4]))
+        await switch_on_handler(locker_id)
+        asyncio.create_task(delayed_switch_off(locker_id))
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -679,8 +800,7 @@ async def adm_reserve(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
-        state1 = await get_entity_state(locker[4], config.tg_bot.ha_url, config.tg_bot.ha_token)
-        state2 = await get_entity_state(locker[5], config.tg_bot.ha_url, config.tg_bot.ha_token)
+        state1, state2 = await get_locker_states(locker)
         await call.message.answer(f'Статус для комірки {locker[2]} ID{locker[0]}:\n'
                                   f'🔓 Замок - {state1}\n'
                                   f'🚪 двері - {state2}')
@@ -774,8 +894,9 @@ async def get_photo(message: Message):
 @router.message(Command("get_info_1"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("sensor.gpio_sensor_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
-        print("sensor.gpio_sensor_1 Стан:", state)
+        await message.answer(
+            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
+        )
     except Exception as e:
         log_exception(e)
         return "Помилка при отриманні стану сутності."
@@ -784,8 +905,9 @@ async def start(message: Message):
 @router.message(Command("get_info_2"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("switch.local_switch_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
-        print("switch.local_switch_1 Стан:", state)
+        await message.answer(
+            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
+        )
     except Exception as e:
         log_exception(e)
         return "Помилка при отриманні стану сутності."
@@ -799,29 +921,68 @@ def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool
     }
     payload = {"entity_id": entity_id}
 
-    response = requests.post(url, json=payload, headers=headers)
-    return response.status_code == 200
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=(3, 5))
+        return response.status_code == 200
+    except requests.RequestException as e:
+        print(f"🚨 HA request error: {e}")
+        return False
 
 
-async def switch_on_handler(locker_item):
-    success = toggle_switch("turn_on", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
+def _normalize_ha_url(url: str) -> str:
+    normalized = (url or '').strip()
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"http://{normalized}"
+
+
+def _station_ha_for_locker(locker_id: int):
+    locker = db.get_locker_by_locker_id(locker_id)
+    if not locker:
+        raise RuntimeError(f"Комірку {locker_id} не знайдено")
+
+    station = db.get_station_by_id(locker[1])
+    if not station:
+        raise RuntimeError(f"Станцію {locker[1]} не знайдено")
+
+    ha_url = (station[7] or '').strip()
+    ha_token = (station[8] or '').strip()
+    auto_lock_delay = int(station[9] or 15)
+    if not ha_url or not ha_token:
+        raise RuntimeError(f"Для станції #{station[0]} не налаштований station-level Home Assistant")
+
+    return _normalize_ha_url(ha_url), ha_token, max(1, auto_lock_delay), locker
+
+
+async def get_locker_states(locker):
+    ha_url, ha_token, _, _ = _station_ha_for_locker(int(locker[0]))
+    state1 = await get_entity_state(locker[4], ha_url, ha_token)
+    state2 = await get_entity_state(locker[5], ha_url, ha_token)
+    return state1, state2
+
+
+async def switch_on_handler(locker_id: int):
+    ha_url, ha_token, _, locker = _station_ha_for_locker(int(locker_id))
+    success = await asyncio.to_thread(toggle_switch, "turn_on", ha_url, ha_token, locker[4])
     if success:
         print("✅ Перемикач увімкнено!")
     else:
-        print("❌ Не вдалося увімкнути перемикач.")
+        raise RuntimeError(f"Не вдалося увімкнути перемикач {locker[4]}")
 
 
-async def switch_off_handler(locker_item):
-    success = toggle_switch("turn_off", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
+async def switch_off_handler(locker_id: int):
+    ha_url, ha_token, _, locker = _station_ha_for_locker(int(locker_id))
+    success = await asyncio.to_thread(toggle_switch, "turn_off", ha_url, ha_token, locker[4])
     if success:
         print("✅ Перемикач вимкнено!")
     else:
-        print("❌ Не вдалося вимкнути перемикач.")
+        print(f"❌ Не вдалося вимкнути перемикач {locker[4]}.")
 
 
-async def delayed_switch_off(entity_id: str, delay: int = 15):
+async def delayed_switch_off(locker_id: int):
+    _, _, delay, _ = _station_ha_for_locker(int(locker_id))
     await asyncio.sleep(delay)
-    await switch_off_handler(entity_id)
+    await switch_off_handler(locker_id)
 
 
 # f_locker_status
@@ -904,8 +1065,7 @@ async def f_locker_action(call: CallbackQuery):
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-        state1 = await get_entity_state(locker[4], config.tg_bot.ha_url, config.tg_bot.ha_token)
-        state2 = await get_entity_state(locker[5], config.tg_bot.ha_url, config.tg_bot.ha_token)
+        state1, state2 = await get_locker_states(locker)
 
         locker_text = f'Комірка {locker[2]}\n' \
                       f'Тип: {kit[1]}\n' \
@@ -925,8 +1085,8 @@ async def f_adm_openLocker(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
-        await switch_on_handler(locker[4])
-        asyncio.create_task(delayed_switch_off(locker[4]))
+        await switch_on_handler(locker_id)
+        asyncio.create_task(delayed_switch_off(locker_id))
 
         buttons = []
         buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])

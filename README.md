@@ -21,6 +21,16 @@ python -m venv .venv && source .venv/bin/activate && pip install -r requirements
 source .venv/bin/activate
 python bot.py
 ```
+
+to kill process:
+```bash
+pgrep -af "python.*bot.py|watchmedo.*bot.py" || true
+kill 62514 && echo "Stopped process 62514"
+
+pgrep -af "python.*bot.py|watchmedo.*bot.py" || echo "No bot process running"
+kill -9 62514 && echo "Force-stopped process 62514"
+```
+
 in development, setup watchdog to restart bot on code change:
 ```bash
 pip install watchdog
@@ -135,6 +145,9 @@ POST /api/services/switch/turn_on     → Unlock locker
 POST /api/services/switch/turn_off    → Lock locker
 ```
 
+For multi-station mode, each station uses its own dedicated Home Assistant endpoint and token (cloudflared HTTPS URL or static/Tailscale IP).
+Global HA fallback is not used for station operations.
+
 Each locker in the DB has two HA entity IDs:
 - `ha_lock_id` — the switch to open/close
 - `ha_door_id` — door sensor that returns `"close"` or `"open"`
@@ -219,12 +232,34 @@ HA_URL=http://your-homeassistant-ip:8123
 HA_TOKEN=your_long_lived_access_token
 ```
 
+Note:
+- `HA_URL` and `HA_TOKEN` can remain for legacy compatibility, but station operations are resolved from `stations` table station-level HA fields.
+- For each active station, configure `ha_url_or_ip` and `ha_token` in DB.
+
 ### 4. Apply missing DB migrations
 ```bash
 sqlite3 ha_bot.db "ALTER TABLE rent ADD COLUMN complect_file_type TEXT;"
 sqlite3 ha_bot.db "ALTER TABLE rent ADD COLUMN complect_file_id TEXT;"
 sqlite3 ha_bot.db "ALTER TABLE surcharge ADD COLUMN to_rent TEXT DEFAULT '-';"
+
+# multi-station visibility + station HA config
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;"
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN is_visible_for_clients INTEGER NOT NULL DEFAULT 1;"
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 100;"
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN ha_url_or_ip TEXT;"
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN ha_token TEXT;"
+sqlite3 ha_bot.db "ALTER TABLE stations ADD COLUMN auto_lock_delay_sec INTEGER NOT NULL DEFAULT 15;"
+
+# optional indexes
+sqlite3 ha_bot.db "CREATE INDEX IF NOT EXISTS idx_stations_visibility ON stations(is_active, is_visible_for_clients, sort_order);"
+sqlite3 ha_bot.db "CREATE INDEX IF NOT EXISTS idx_lockers_station_status ON lockers(station_id, status);"
+sqlite3 ha_bot.db "CREATE INDEX IF NOT EXISTS idx_rent_station_status ON rent(station_id, status);"
 ```
+
+### Multi-Station Operations
+- Client-visible stations are controlled from DB (`is_visible_for_clients`) and limited to max 10 in runtime logic.
+- Admin menu includes station management entry `🏢 Станції` to toggle visibility and activity.
+- Station activity depends on station-level HA config. If station HA endpoint/token is missing, locker operations for this station are rejected.
 
 ### 5. Run
 ```bash

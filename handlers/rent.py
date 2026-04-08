@@ -35,12 +35,33 @@ async def show_locker_selection(message: Message, state: FSMContext, station_id:
         await state.clear()
         return
 
-    buttons = []
+    configured_lockers = []
+    skipped_count = 0
     for locker in free_lockers:
         locker_id = locker[0]
-        locker_name = locker[2]
         kit = db.get_inventory_kit_by_locker_and_station_id(station_id, locker_id)
-        kit_name = kit[1] if kit else "порожньо"
+        if not kit:
+            skipped_count += 1
+            continue
+        configured_lockers.append((locker, kit))
+
+    if not configured_lockers:
+        await message.edit_text(
+            "Немає доступних комірок із налаштованим комплектом на цій станції.",
+            reply_markup=kb.user_menu,
+        )
+        await state.clear()
+        return
+
+    configured_ids = {locker[0] for locker, _ in configured_lockers}
+    selected = [locker_id for locker_id in selected if locker_id in configured_ids]
+    await state.update_data(selected_lockers=selected)
+
+    buttons = []
+    for locker, kit in configured_lockers:
+        locker_id = locker[0]
+        locker_name = locker[2]
+        kit_name = kit[1]
 
         selected_marker = "✅ " if locker_id in selected else "◻️ "
         text = f"{selected_marker}{locker_name} — {kit_name}"
@@ -67,6 +88,12 @@ async def show_locker_selection(message: Message, state: FSMContext, station_id:
                   '⚖️ Рекомендована вага користувача: понад 85 кг\n\n' \
                   '📍 <strong>Резервація</strong>:\n' \
                   ' <strong>Оберіть одну або кілька комірок:</strong>'
+
+    if skipped_count:
+        locker_text += (
+            f"\n\n⚠️ {skipped_count} комірок приховано, "
+            "бо для них не налаштовано комплект/тариф."
+        )
 
     await message.edit_text(locker_text, reply_markup=keyboard)
 
@@ -129,10 +156,11 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
     try:
         await bot.answer_callback_query(callback.id)
 
-        stations = db.get_all_active_stations()
+        stations = db.get_visible_stations()
         if not stations:
             await callback.message.answer("🚫 Наразі немає доступних станцій.", reply_markup=kb.user_menu)
             await state.clear()
+            return
 
         keyboard_buttons = [
             [InlineKeyboardButton(text=f"{station[1]} {station[2]}", callback_data=f"station_{station[0]}")]
@@ -151,11 +179,28 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
 
 
 # --- ВИБІР СТАНЦІЇ ---
-@router.callback_query(F.data.startswith("station_"))
+@router.callback_query(F.data.regexp(r"^station_\d+$"))
 async def choose_station(callback: CallbackQuery, state: FSMContext):
     try:
         await bot.answer_callback_query(callback.id)
         station_id = int(callback.data.split("_")[1])
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("❌ Станцію не знайдено.", reply_markup=kb.user_menu)
+            await state.clear()
+            return
+
+        is_active = bool(station[4])
+        is_visible = bool(station[5])
+        is_working = station[3] == "work"
+        if not (is_active and is_visible and is_working):
+            await callback.message.answer(
+                "⚠️ Ця станція тимчасово недоступна. Оберіть іншу станцію.",
+                reply_markup=kb.user_menu,
+            )
+            await state.clear()
+            return
+
         await state.update_data(station_id=station_id, selected_lockers=[])
 
         await show_locker_selection(callback.message, state, station_id)
@@ -170,6 +215,18 @@ async def toggle_locker_selection(callback: CallbackQuery, state: FSMContext):
         await bot.answer_callback_query(callback.id)
         locker_id = int(callback.data.split("_")[1])
         data = await state.get_data()
+        station_id = data.get("station_id")
+        if not station_id:
+            await callback.answer("Сесію втрачено. Почніть оренду заново.", show_alert=True)
+            await state.clear()
+            return
+
+        kit = db.get_inventory_kit_by_locker_and_station_id(station_id, locker_id)
+        if not kit:
+            await callback.answer("Для цієї комірки не налаштовано комплект.", show_alert=True)
+            await show_locker_selection(callback.message, state, station_id)
+            return
+
         selected = data.get("selected_lockers", [])
 
         if locker_id in selected:
@@ -178,7 +235,6 @@ async def toggle_locker_selection(callback: CallbackQuery, state: FSMContext):
             selected.append(locker_id)
 
         await state.update_data(selected_lockers=selected)
-        station_id = data.get("station_id")
         await show_locker_selection(callback.message, state, station_id)
     except Exception as e:
         log_exception(e)
@@ -197,12 +253,19 @@ async def done_selecting_cells(callback: CallbackQuery, state: FSMContext):
             return
 
         data = await state.get_data()
+        station_id = data.get('station_id')
+        for locker_id in selected:
+            if not db.get_inventory_kit_by_locker_and_station_id(station_id, locker_id):
+                await callback.answer("Деякі комірки не налаштовані. Оберіть інші.", show_alert=True)
+                await show_locker_selection(callback.message, state, station_id)
+                return
+
         now = datetime.now()
         create_date = now.strftime("%d.%m.%Y %H:%M")
         for locker_id in selected:
             # Створюємо оренду зі статусом і таймером
             # Таймер задається виходячи з інтервала 15сек (1хв = 4, 60хв = 240)
-            db.add_base_rent(callback.from_user.id, data.get('station_id'), locker_id, create_date, 'Резервація', 60)
+            db.add_base_rent(callback.from_user.id, station_id, locker_id, create_date, 'Резервація', 60)
             db.locker_status("Резервація", locker_id)
 
         await state.set_state(RentBoard.choosing_rent_time)
@@ -271,6 +334,13 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
             time = int(callback.data.split("_")[1])
             selected = data.get("selected_lockers", [])
             station_id = data.get("station_id")
+
+            if not selected:
+                await callback.answer("Оберіть хоча б одну комірку.", show_alert=True)
+                await state.set_state(RentBoard.choosing_cells)
+                await show_locker_selection(callback.message, state, station_id)
+                return
+
             today = datetime.today()
             week_day = today.weekday()
             day_type = 'weekday'
@@ -281,9 +351,23 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
             all_price = []
             for locker_id in selected:
                 inventory_kit = db.get_inventory_kit_by_locker_and_station_id(station_id, locker_id)
+                if not inventory_kit:
+                    await callback.message.answer(
+                        f"⚠️ Комірка ID {locker_id} не має налаштованого комплекту. Оберіть іншу.",
+                        reply_markup=kb.user_menu,
+                    )
+                    await state.clear()
+                    return
                 inventory_kit_name = inventory_kit[1]
                 tariff_type = inventory_kit[4]
                 price = db.get_tariff_by_data(tariff_type, day_type, time)
+                if not price:
+                    await callback.message.answer(
+                        f"⚠️ Для комплекту {inventory_kit_name} немає тарифу на {time} хв ({day_type}).",
+                        reply_markup=kb.user_menu,
+                    )
+                    await state.clear()
+                    return
                 price_per_time = price[4]
                 price_for_locker = [inventory_kit_name, price_per_time]
                 db.update_price_and_time_in_rent(callback.from_user.id, station_id, locker_id, price_per_time, time)
