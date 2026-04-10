@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 
 ITEMS_PER_PAGE = 10
 
+
+def _station_label(station_id: int) -> str:
+    station = db.get_station_by_id(station_id)
+    if not station:
+        return f"Станція #{station_id}"
+
+    station_location = (station[2] or "").strip()
+    if station_location:
+        return station_location
+    return f"Станція #{station_id}"
+
 @router.message(Command("start"))
 async def start(message: Message):
     try:
@@ -275,16 +286,22 @@ async def my_rent(callback: CallbackQuery):
             for rent in my_rent:
                 locker_id = rent[3]
                 my_locker = db.get_locker_by_locker_id(locker_id)
+                if not my_locker:
+                    continue
+                station_label = _station_label(my_locker[1])
                 buttons.append([InlineKeyboardButton(
-                    text=f"🔓 Відкрити комірку {my_locker[2]}",
+                    text=f"🔓 Відкрити комірку {my_locker[2]} ({station_label})",
                     callback_data=f"openLocker:{rent[0]}"
                 )])
 
             for rent in my_rent:
                 locker_id = rent[3]
                 my_locker = db.get_locker_by_locker_id(locker_id)
+                if not my_locker:
+                    continue
+                station_label = _station_label(my_locker[1])
                 buttons.append([InlineKeyboardButton(
-                    text=f"✅ Завершити оренду комірки {my_locker[2]}",
+                    text=f"✅ Завершити оренду комірки {my_locker[2]} ({station_label})",
                     callback_data=f"finishRent:{rent[0]}"
                 )])
 
@@ -318,11 +335,11 @@ async def locker_status(callback: CallbackQuery):
             buttons = []
             for stations in active_stations:
                 stations_id = stations[0]
-                stations_name = stations[1]
                 stations_loc = stations[2]
+                station_label = stations_loc if stations_loc else f"Станція #{stations_id}"
 
                 buttons.append([InlineKeyboardButton(
-                    text=f"{stations_name} - {stations_loc}",
+                    text=station_label,
                     callback_data=f"lockerStatus:{stations_id}"
                 )])
 
@@ -365,10 +382,11 @@ async def station_management(callback: CallbackQuery):
 
         buttons = []
         for station in stations:
-            station_id, name, location, status, is_active, is_visible, sort_order = station
+            station_id, _, location, status, is_active, is_visible, sort_order = station
             vis_icon = "👁" if is_visible else "🙈"
             active_icon = "✅" if is_active else "⏸"
-            label = f"{active_icon}{vis_icon} #{station_id} {name} - {location} ({status})"
+            location_label = location if location else f"Станція #{station_id}"
+            label = f"{active_icon}{vis_icon} #{station_id} {location_label} ({status})"
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"station_manage:{station_id}")])
 
         buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
@@ -394,7 +412,6 @@ async def station_manage(callback: CallbackQuery):
         sort_order = station[6]
         station_text = (
             f"🏢 Станція #{station[0]}\n"
-            f"Назва: {station[1]}\n"
             f"Локація: {station[2]}\n"
             f"Статус роботи: {station[3]}\n"
             f"Активна: {'так' if is_active else 'ні'}\n"
@@ -662,7 +679,8 @@ async def lockerStatus(call: CallbackQuery):
                 locker_id = locker[0]
                 locker_name = locker[2]
                 locker_status = locker[3]
-                locker_text = f'ID:{locker_id} | {locker_name} | {locker_status}'
+                station_label = _station_label(locker[1])
+                locker_text = f'ID:{locker_id} | {locker_name} ({station_label}) | {locker_status}'
                 callback_data = f"locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='Назад', callback_data=f'back_to_main_menu')])
@@ -801,7 +819,8 @@ async def adm_reserve(call: CallbackQuery):
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
         state1, state2 = await get_locker_states(locker)
-        await call.message.answer(f'Статус для комірки {locker[2]} ID{locker[0]}:\n'
+        station_label = _station_label(locker[1])
+        await call.message.answer(f'Статус для комірки {locker[2]} ({station_label}) ID{locker[0]}:\n'
                                   f'🔓 Замок - {state1}\n'
                                   f'🚪 двері - {state2}')
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
@@ -815,11 +834,15 @@ async def locker_action(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
+        if not locker:
+            await call.message.answer('Комірку не знайдено')
+            return
+        station_label = _station_label(locker[1])
         buttons = []
         buttons.append(
-            [InlineKeyboardButton(text=f'🔓 Відкрити ком.{locker[2]}', callback_data=f'adm_openLocker:{locker_id}')])
+            [InlineKeyboardButton(text=f'🔓 Відкрити ком.{locker[2]} ({station_label})', callback_data=f'adm_openLocker:{locker_id}')])
         buttons.append(
-            [InlineKeyboardButton(text=f'♻️ Резервація  ком.{locker[2]}', callback_data=f'adm_reserve:{locker_id}')])
+            [InlineKeyboardButton(text=f'♻️ Резервація  ком.{locker[2]} ({station_label})', callback_data=f'adm_reserve:{locker_id}')])
         buttons.append(
             [InlineKeyboardButton(text=f'➖ Завершити повязані оренди', callback_data=f'adm_close_rent:{locker_id}')])
         buttons.append([InlineKeyboardButton(text=f'Статус сенсорів', callback_data=f'test:{locker_id}')])
@@ -997,11 +1020,11 @@ async def f_locker_status(callback: CallbackQuery):
             buttons = []
             for stations in active_stations:
                 stations_id = stations[0]
-                stations_name = stations[1]
                 stations_loc = stations[2]
+                station_label = stations_loc if stations_loc else f"Станція #{stations_id}"
 
                 buttons.append([InlineKeyboardButton(
-                    text=f"{stations_name} - {stations_loc}",
+                    text=station_label,
                     callback_data=f"f_locker_status:{stations_id}"
                 )])
 
@@ -1035,7 +1058,8 @@ async def f_locker_status(call: CallbackQuery):
                 locker_name = locker[2]
                 locker_status = locker[3]
                 kit = db.get_inventory_kit_by_locker_and_station_id(stations_id, locker_id)
-                locker_text = f'{locker_name} | {kit[1]} | {locker_status}'
+                station_label = _station_label(locker[1])
+                locker_text = f'{locker_name} ({station_label}) | {kit[1]} | {locker_status}'
                 callback_data = f"f_locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status')])
@@ -1056,6 +1080,7 @@ async def f_locker_action(call: CallbackQuery):
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
         kit = db.get_inventory_kit_by_locker_and_station_id(locker[1], locker[0])
+        station_label = _station_label(locker[1])
 
         buttons = []
         buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
@@ -1067,7 +1092,7 @@ async def f_locker_action(call: CallbackQuery):
 
         state1, state2 = await get_locker_states(locker)
 
-        locker_text = f'Комірка {locker[2]}\n' \
+        locker_text = f'Комірка {locker[2]} ({station_label})\n' \
                       f'Тип: {kit[1]}\n' \
                       f'Статус: {locker[3]}\n' \
                       f'Замок: {state1}\n' \
@@ -1222,7 +1247,7 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"TGU: @{user_info[2]}\n" \
                                  f"Телефон: {user_info[4]}\n" \
                                  f"Створено: {rent[11]}\n" \
-                                 f"Комірка: {locker[2]} | {locker[3]}\n" \
+                                 f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
                                  f"Час оренди: {rent[4]}хв\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
@@ -1361,7 +1386,7 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"TGU: @{user_info[2]}\n" \
                                  f"Телефон: {user_info[4]}\n" \
                                  f"Створено: {rent[11]}\n" \
-                                 f"Комірка: {locker[2]} | {locker[3]}\n" \
+                                 f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
                                  f"Час оренди: {rent[4]}хв\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \

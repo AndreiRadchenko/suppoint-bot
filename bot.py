@@ -6,7 +6,7 @@ from config_data.config import Config, load_config
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from services.payments import PaymentService, MonobankWebhookServer
 
-from helper.utilits_funk import timer
+from helper.utilits_funk import timer, sync_station_activity
 
 config: Config = load_config()
 
@@ -19,6 +19,7 @@ scheduler = AsyncIOScheduler()
 async def scheduler_funk():
     # Створюємо планувальник
     scheduler.add_job(timer, trigger="interval", seconds=15)
+    scheduler.add_job(sync_station_activity, trigger="interval", seconds=30)
     # Запускаємо планувальник
     scheduler.start()
 

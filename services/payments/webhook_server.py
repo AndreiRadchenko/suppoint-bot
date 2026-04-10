@@ -55,6 +55,7 @@ class MonobankWebhookServer:
 
         try:
             payload = await request.json()
+            print("Received webhook payload:", payload)
         except Exception:
             return web.Response(status=400, text="Invalid JSON")
 

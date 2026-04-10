@@ -28,6 +28,9 @@ class RentBoard(StatesGroup):
 async def show_locker_selection(message: Message, state: FSMContext, station_id: int):
     data = await state.get_data()
     selected = data.get("selected_lockers", [])
+    station = db.get_station_by_id(station_id)
+    station_location = (station[2] if station and station[2] else "").strip()
+    station_label = station_location if station_location else f"Станція #{station_id}"
 
     free_lockers = db.get_all_available_lockers(station_id)
     if not free_lockers:
@@ -64,7 +67,7 @@ async def show_locker_selection(message: Message, state: FSMContext, station_id:
         kit_name = kit[1]
 
         selected_marker = "✅ " if locker_id in selected else "◻️ "
-        text = f"{selected_marker}{locker_name} — {kit_name}"
+        text = f"{selected_marker}{locker_name} ({station_label}) — {kit_name}"
         callback_data = f"cell_{locker_id}"
         buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
@@ -162,10 +165,18 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
             await state.clear()
             return
 
-        keyboard_buttons = [
-            [InlineKeyboardButton(text=f"{station[1]} {station[2]}", callback_data=f"station_{station[0]}")]
-            for station in stations
-        ]
+        keyboard_buttons = []
+        for station in stations:
+            station_id = station[0]
+            location_label = station[2] or f"Станція #{station_id}"
+            is_active = bool(station[4])
+            if is_active:
+                text = f"🟢 {location_label}"
+                callback_data = f"station_{station_id}"
+            else:
+                text = f"🔴 {location_label} (неактивна)"
+                callback_data = f"station_inactive_{station_id}"
+            keyboard_buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
         keyboard_buttons.append([InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")])
 
@@ -174,6 +185,15 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer("📍 <strong>Резервація</strong>:\n<strong>Оберіть станцію прокату</strong>\n", reply_markup=keyboard)
         await state.set_state(RentBoard.choosing_station)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.regexp(r"^station_inactive_\d+$"))
+async def choose_inactive_station(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        await callback.answer("⚠️ Станція тимчасово неактивна. Оберіть іншу станцію.", show_alert=True)
     except Exception as e:
         log_exception(e)
 
@@ -349,11 +369,15 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                 day_type = 'weekend'
 
             all_price = []
+            station = db.get_station_by_id(station_id)
+            station_name = (station[1] if station and station[1] else f"#{station_id}").strip()
+            station_location = (station[2] if station and station[2] else "").strip()
+            station_label = station_location if station_location else f"Станція #{station_id}"
             for locker_id in selected:
                 inventory_kit = db.get_inventory_kit_by_locker_and_station_id(station_id, locker_id)
                 if not inventory_kit:
                     await callback.message.answer(
-                        f"⚠️ Комірка ID {locker_id} не має налаштованого комплекту. Оберіть іншу.",
+                        f"⚠️ Комірка ID {locker_id} ({station_label}) не має налаштованого комплекту. Оберіть іншу.",
                         reply_markup=kb.user_menu,
                     )
                     await state.clear()
@@ -399,7 +423,10 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                     'Резервація',
                 )
 
-            destination = f"Оренда спорядження. Станція {station_id}. Тривалість {time} хв"
+            if station_location:
+                destination = f"Оренда спорядження. Станція: {station_name} ({station_location}). Тривалість {time} хв"
+            else:
+                destination = f"Оренда спорядження. Станція: {station_name}. Тривалість {time} хв"
             price_url = await payment_service.create_initial_invoice(
                 tg_id=callback.from_user.id,
                 station_id=station_id,

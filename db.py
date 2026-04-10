@@ -46,7 +46,8 @@ class Database:
                         raw_payload TEXT,
                         created_at TEXT NOT NULL,
                         paid_at TEXT,
-                        updated_at TEXT NOT NULL
+                        updated_at TEXT NOT NULL,
+                        invoice_url TEXT
                     )
                     """
                 )
@@ -90,6 +91,10 @@ class Database:
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
                     if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
+
+                if self._table_exists(cursor, 'payment_transactions'):
+                    if not self._column_exists(cursor, 'payment_transactions', 'invoice_url'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN invoice_url TEXT")
 
                 conn.commit()
         except sqlite3.Error as e:
@@ -438,10 +443,9 @@ class Database:
                 cursor = conn.cursor()
                 return cursor.execute(
                     """
-                    SELECT id, name, location, status
+                    SELECT id, name, location, status, COALESCE(is_active, 1)
                     FROM stations
                     WHERE status = 'work'
-                      AND COALESCE(is_active, 1) = 1
                       AND COALESCE(is_visible_for_clients, 1) = 1
                     ORDER BY COALESCE(sort_order, 100), id
                     LIMIT ?
@@ -654,7 +658,8 @@ class Database:
             reference,
             external_invoice_id,
             checkout_url,
-            status='pending'
+                status='pending',
+                invoice_url=None,
     ):
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -665,13 +670,13 @@ class Database:
                     INSERT OR REPLACE INTO payment_transactions (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        checkout_url, status, created_at, updated_at, invoice_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, now, now
+                        checkout_url, status, now, now, invoice_url
                     )
                 )
                 conn.commit()
@@ -700,7 +705,7 @@ class Database:
             print("Помилка get_pending_payment_transactions:", e)
             return []
 
-    def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None):
+    def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None, invoice_url=None):
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -710,10 +715,11 @@ class Database:
                     """
                     UPDATE payment_transactions
                     SET status = ?, receipt_url = COALESCE(?, receipt_url), raw_payload = ?,
-                        paid_at = COALESCE(?, paid_at), updated_at = ?
+                        paid_at = COALESCE(?, paid_at), updated_at = ?,
+                        invoice_url = COALESCE(?, invoice_url)
                     WHERE external_invoice_id = ?
                     """,
-                    (status, receipt_url, raw_payload, paid_at, now, invoice_id)
+                    (status, receipt_url, raw_payload, paid_at, now, invoice_url, invoice_id)
                 )
                 conn.commit()
         except sqlite3.Error as e:

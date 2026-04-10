@@ -46,8 +46,8 @@ def load_config(path: str | None = None) -> Config:
         tg_bot=TgBot(
             token=env('BOT_TOKEN'),
             admin_ids=list(map(int, env.list('ADMINS'))),
-            ha_url=env('HA_URL'),
-            ha_token=env('HA_TOKEN'),
+            ha_url=env.str('HA_URL', default=''),
+            ha_token=env.str('HA_TOKEN', default=''),
         ),
         db=DatabaseConfig(
             path=env('DB_PATH'),

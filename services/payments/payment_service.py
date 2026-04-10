@@ -116,6 +116,7 @@ class PaymentService:
             external_invoice_id=result["invoiceId"],
             checkout_url=result["pageUrl"],
             status="pending",
+            invoice_url=result.get("pageUrl"),
         )
 
         return result["pageUrl"]
@@ -172,6 +173,7 @@ class PaymentService:
             external_invoice_id=result["invoiceId"],
             checkout_url=result["pageUrl"],
             status="pending",
+            invoice_url=result.get("pageUrl"),
         )
 
         return result["pageUrl"]
@@ -211,15 +213,28 @@ class PaymentService:
         if existing_status in {"success", "failed", "expired"}:
             return
 
-        receipt_url = payload.get("invoiceUrl") or tx[12] or tx[11]
+        invoice_url = payload.get("invoiceUrl") or (tx[18] if len(tx) > 18 else tx[11])
+        receipt_url = payload.get("receiptUrl") or tx[12]
+
+        if normalized_status == "success" and (not receipt_url or not invoice_url):
+            status_invoice_url, status_receipt_url = await self._enrich_urls_from_status(invoice_id)
+            invoice_url = status_invoice_url or invoice_url
+            receipt_url = status_receipt_url or receipt_url
+
         self.db.update_payment_transaction_status(
             invoice_id=invoice_id,
             status=normalized_status,
             receipt_url=receipt_url,
             raw_payload=raw_body.decode("utf-8", errors="ignore"),
+            invoice_url=invoice_url,
         )
 
         if normalized_status == "success":
+            if not receipt_url:
+                logging.info(
+                    "Monobank success without receipt URL for invoice %s; saved invoice_url only",
+                    invoice_id,
+                )
             await self._mark_paid(tx, invoice_id, receipt_url)
             return
 
@@ -229,7 +244,7 @@ class PaymentService:
                 "Оплата не завершена. Спробуйте оплатити ще раз у меню оренди.",
             )
 
-    async def _mark_paid(self, tx, invoice_id: str, receipt_url: str):
+    async def _mark_paid(self, tx, invoice_id: str, receipt_url: Optional[str]):
         payment_type = tx[1]
         tg_id = tx[2]
         rent_id = tx[3]
@@ -266,6 +281,17 @@ class PaymentService:
                 "✅ Доплату підтверджено автоматично. Дякуємо, оренду завершено.",
             )
 
+    async def _enrich_urls_from_status(self, invoice_id: str) -> tuple[Optional[str], Optional[str]]:
+        try:
+            status_payload = await self.client.get_invoice_status(invoice_id)
+        except Exception as error:
+            logging.warning("Failed to enrich invoice %s URLs from status: %s", invoice_id, error)
+            return None, None
+
+        invoice_url = status_payload.get("invoiceUrl")
+        receipt_url = status_payload.get("receiptUrl")
+        return invoice_url, receipt_url
+
     async def reconcile_pending_transactions(self):
         pending = self.db.get_pending_payment_transactions()
         for tx in pending:
@@ -274,4 +300,19 @@ class PaymentService:
                 payload = await self.client.get_invoice_status(invoice_id)
                 await self.process_webhook_payload(payload, json.dumps(payload, ensure_ascii=False).encode("utf-8"))
             except Exception as error:
+                error_text = str(error)
+                # Old or foreign-environment invoices may return errCode 1004 (invoice not found).
+                # Mark as terminal to avoid infinite reconcile retries and log noise.
+                if "'errCode': '1004'" in error_text or '"errCode": "1004"' in error_text or "invoice not found" in error_text:
+                    self.db.update_payment_transaction_status(
+                        invoice_id=invoice_id,
+                        status="failed",
+                        raw_payload=error_text,
+                    )
+                    logging.info(
+                        "Marked invoice %s as failed after reconcile not-found response (errCode 1004)",
+                        invoice_id,
+                    )
+                    continue
+
                 print(f"Помилка reconcile_pending_transactions для {invoice_id}: {error}")
