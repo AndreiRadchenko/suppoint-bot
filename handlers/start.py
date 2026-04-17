@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 
 ITEMS_PER_PAGE = 10
 
+
+def _station_label(station_id: int) -> str:
+    station = db.get_station_by_id(station_id)
+    if not station:
+        return f"Станція #{station_id}"
+
+    station_location = (station[2] or "").strip()
+    if station_location:
+        return station_location
+    return f"Станція #{station_id}"
+
 @router.message(Command("start"))
 async def start(message: Message):
     try:
@@ -117,52 +128,11 @@ async def about_rent_reg(callback: CallbackQuery):
 async def check_pay(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        rents_on_inspection = db.get_rent_on_inspection()
-
-        if len(rents_on_inspection) > 0:
-
-            rent_count_by_user = defaultdict(int)
-            for rent in rents_on_inspection:
-                tg_id = rent[1]
-                rent_count_by_user[tg_id] += 1
-
-            for rent in rents_on_inspection:
-                tg_id = rent[1]
-
-                note = ""
-                if rent_count_by_user[tg_id] > 1:
-                    note = f"\n⚠️ У цього користувача *{rent_count_by_user[tg_id]}* активні оренди."
-
-                user = db.get_user_by_tg_id(tg_id)
-
-                text = (
-                    f'Аренда №{rent[0]} від {rent[11]}\n\n'
-                    f'Користувач {user[3]}\n'
-                    f'Телефон {user[4]}\n'
-                    f'Станція №{rent[2]}\n'
-                    f'Комірки {rent[3]}\n'
-                    f'Час {rent[4]} хв.\n'
-                    f'Сумма {rent[5]} грн.\n'
-                    f'{note}'
-                )
-
-                btn1 = InlineKeyboardButton(text="✅ Підтвердити", callback_data=f"rentOk:{rent[0]}")
-                btn2 = InlineKeyboardButton(text="Запит фото", callback_data=f"reSend:{rent[0]}")
-                btn3 = InlineKeyboardButton(text="Відмова", callback_data=f"rentNot:{rent[0]}")
-                apruv_menu = InlineKeyboardMarkup(inline_keyboard=[
-                    [btn1],
-                    [btn2],
-                    [btn3],
-                ])
-
-                if rent[9] == "document":
-                    await bot.send_document(callback.from_user.id, rent[10], caption=text, reply_markup=apruv_menu,
-                                            parse_mode="Markdown")
-                else:
-                    await bot.send_photo(callback.from_user.id, rent[10], caption=text, reply_markup=apruv_menu,
-                                         parse_mode="Markdown")
-        else:
-            await callback.message.answer('На перевірку нічого не має', reply_markup=kb.admin_menu)
+        await callback.message.answer(
+            'Автоматичне підтвердження оплат активовано.\n\n'
+            'Ручна перевірка первинних оплат більше не використовується.',
+            reply_markup=kb.admin_menu,
+        )
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -271,15 +241,7 @@ async def check_pay(callback: CallbackQuery):
 async def rentNot(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-
-        rent = db.get_rent_by_id(rent_id)
-
-        await bot.send_message(rent[1], 'Наданий вами документ не підтведив оплату')
-        db.rent_update_status('Відміна адміністратором', rent_id)
-        db.locker_status('Доступна оренда', rent[3])
-
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Ручне відхилення оплати вимкнено. Оплата підтверджується webhook Monobank.')
     except Exception as e:
         log_exception(e)
 
@@ -288,15 +250,7 @@ async def rentNot(call: CallbackQuery):
 async def reSend(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-
-        rent = db.get_rent_by_id(rent_id)
-
-        await bot.send_message(rent[1],
-                               'Наданий вами документ не є підтвердженням, надішліть боту коректне фото (час на повторне надсилання 5хв)')
-
-        db.rent_update_status_and_timer('Повторний запит', 20, rent_id)
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Повторний запит фото вимкнено. Оплата підтверджується webhook Monobank.')
     except Exception as e:
         log_exception(e)
 
@@ -305,22 +259,7 @@ async def reSend(call: CallbackQuery):
 async def rentOk(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        rent_id = call.data.split(":")[1]
-        rent = db.get_rent_by_id(rent_id)
-        db.rent_update_status_and_timer('Очікування відкриття', 20, rent_id)
-        db.locker_status("Очікування відкриття", rent[3])
-        db.rent_update_pay_1_status(rent_id)
-
-        await bot.send_message(rent[1],
-                               '✅ Оплату підтверджено — доступ активовано!\n\n'
-                               '🚪 Початок оренди:\n'
-                               ' Як отримати спорядження та почати оренду:\n'
-                               '1.📁 Перейдіть у розділ 🛶 Мої оренди\n'
-                               '2.🔘 Натисніть кнопку  🔓 Відкрити комірку\n'
-                               '3.⏱️ Якщо комірку не відкрито вручну — автоматичний початок оренди через 5 хвилин',
-                               reply_markup=kb.user_menu)
-
-        await bot.delete_message(call.message.chat.id, call.message.message_id)
+        await call.message.answer('Ручне підтвердження оплати вимкнено. Підтвердження відбувається автоматично через Monobank webhook.')
     except Exception as e:
         log_exception(e)
 
@@ -347,16 +286,22 @@ async def my_rent(callback: CallbackQuery):
             for rent in my_rent:
                 locker_id = rent[3]
                 my_locker = db.get_locker_by_locker_id(locker_id)
+                if not my_locker:
+                    continue
+                station_label = _station_label(my_locker[1])
                 buttons.append([InlineKeyboardButton(
-                    text=f"🔓 Відкрити комірку {my_locker[2]}",
+                    text=f"🔓 Відкрити комірку {my_locker[2]} ({station_label})",
                     callback_data=f"openLocker:{rent[0]}"
                 )])
 
             for rent in my_rent:
                 locker_id = rent[3]
                 my_locker = db.get_locker_by_locker_id(locker_id)
+                if not my_locker:
+                    continue
+                station_label = _station_label(my_locker[1])
                 buttons.append([InlineKeyboardButton(
-                    text=f"✅ Завершити оренду комірки {my_locker[2]}",
+                    text=f"✅ Завершити оренду комірки {my_locker[2]} ({station_label})",
                     callback_data=f"finishRent:{rent[0]}"
                 )])
 
@@ -390,11 +335,11 @@ async def locker_status(callback: CallbackQuery):
             buttons = []
             for stations in active_stations:
                 stations_id = stations[0]
-                stations_name = stations[1]
                 stations_loc = stations[2]
+                station_label = stations_loc if stations_loc else f"Станція #{stations_id}"
 
                 buttons.append([InlineKeyboardButton(
-                    text=f"{stations_name} - {stations_loc}",
+                    text=station_label,
                     callback_data=f"lockerStatus:{stations_id}"
                 )])
 
@@ -411,6 +356,128 @@ async def locker_status(callback: CallbackQuery):
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
+
+
+def _station_manage_keyboard(station_id: int, is_active: bool, is_visible: bool) -> InlineKeyboardMarkup:
+    next_visibility = 0 if is_visible else 1
+    next_active = 0 if is_active else 1
+    vis_label = "🙈 Приховати для клієнтів" if is_visible else "👁 Показати для клієнтів"
+    active_label = "⏸ Деактивувати" if is_active else "✅ Активувати"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=vis_label, callback_data=f"station_toggle_vis:{station_id}:{next_visibility}")],
+        [InlineKeyboardButton(text=active_label, callback_data=f"station_toggle_active:{station_id}:{next_active}")],
+        [InlineKeyboardButton(text="🔙 До станцій", callback_data="station_management")],
+    ])
+
+
+@router.callback_query(F.data == "station_management")
+async def station_management(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        stations = db.get_station_admin_list(include_inactive=True)
+        if not stations:
+            await callback.message.answer("Станції не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        buttons = []
+        for station in stations:
+            station_id, _, location, status, is_active, is_visible, sort_order = station
+            vis_icon = "👁" if is_visible else "🙈"
+            active_icon = "✅" if is_active else "⏸"
+            location_label = location if location else f"Станція #{station_id}"
+            label = f"{active_icon}{vis_icon} #{station_id} {location_label} ({status})"
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"station_manage:{station_id}")])
+
+        buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await callback.message.answer("🏢 Керування станціями:", reply_markup=keyboard)
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_manage:"))
+async def station_manage(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        station_id = int(callback.data.split(":")[1])
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        is_active = bool(station[4])
+        is_visible = bool(station[5])
+        sort_order = station[6]
+        station_text = (
+            f"🏢 Станція #{station[0]}\n"
+            f"Локація: {station[2]}\n"
+            f"Статус роботи: {station[3]}\n"
+            f"Активна: {'так' if is_active else 'ні'}\n"
+            f"Видима для клієнта: {'так' if is_visible else 'ні'}\n"
+            f"Порядок: {sort_order}"
+        )
+        await callback.message.answer(
+            station_text,
+            reply_markup=_station_manage_keyboard(station_id, is_active, is_visible),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_toggle_vis:"))
+async def station_toggle_visibility(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        _, station_id_raw, visible_raw = callback.data.split(":")
+        station_id = int(station_id_raw)
+        target_visible = visible_raw == "1"
+
+        ok, message = db.update_station_visibility(station_id, target_visible)
+        if not ok:
+            await callback.message.answer(f"⚠️ {message}")
+            return
+
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        await callback.message.answer(
+            f"Видимість станції #{station_id} оновлено: {'видима' if target_visible else 'прихована'}",
+            reply_markup=_station_manage_keyboard(station_id, bool(station[4]), bool(station[5])),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
+
+
+@router.callback_query(F.data.startswith("station_toggle_active:"))
+async def station_toggle_active(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        _, station_id_raw, active_raw = callback.data.split(":")
+        station_id = int(station_id_raw)
+        target_active = active_raw == "1"
+
+        if not db.update_station_activity(station_id, target_active):
+            await callback.message.answer("⚠️ Не вдалося оновити активність станції")
+            return
+
+        station = db.get_station_by_id(station_id)
+        if not station:
+            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            return
+
+        await callback.message.answer(
+            f"Активність станції #{station_id} оновлено: {'активна' if target_active else 'неактивна'}",
+            reply_markup=_station_manage_keyboard(station_id, bool(station[4]), bool(station[5])),
+        )
+        await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        log_exception(e)
 
 
 @router.callback_query(F.data == "rent_by_day")
@@ -612,7 +679,8 @@ async def lockerStatus(call: CallbackQuery):
                 locker_id = locker[0]
                 locker_name = locker[2]
                 locker_status = locker[3]
-                locker_text = f'ID:{locker_id} | {locker_name} | {locker_status}'
+                station_label = _station_label(locker[1])
+                locker_text = f'ID:{locker_id} | {locker_name} ({station_label}) | {locker_status}'
                 callback_data = f"locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='Назад', callback_data=f'back_to_main_menu')])
@@ -666,13 +734,13 @@ async def openLocker(call: CallbackQuery):
 
                 if int(rent[0]) == int(rent_id):
                     try:
-                        await switch_on_handler(locker[4])
+                        await switch_on_handler(locker_id)
                     except Exception as e:
                         print(f"🚨 Помилка при відкритті комірки: {e}")
                         retry_keyboard = InlineKeyboardMarkup(
                             inline_keyboard=[
-                                [InlineKeyboardButton("🔁 Спробувати ще раз", callback_data=f"openLocker:{rent_id}")],
-                                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main_menu")]
+                                [InlineKeyboardButton(text="🔁 Спробувати ще раз", callback_data=f"openLocker:{rent_id}")],
+                                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")]
                             ]
                         )
                         await call.message.answer(
@@ -686,7 +754,7 @@ async def openLocker(call: CallbackQuery):
                         db.rent_update_status_and_timer('Оренда', int(rent[4]) * 4, rent[0])
                         db.locker_status("Оренда", rent[3])
                     await call.message.answer('Комірку відкрито', reply_markup=kb.user_menu)
-                    asyncio.create_task(delayed_switch_off(locker[4]))
+                    asyncio.create_task(delayed_switch_off(locker_id))
         else:
             await call.message.answer('Ця оренда закінчена чи більш не актуальна')
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
@@ -700,9 +768,8 @@ async def adm_openLocker(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
-        locker = db.get_locker_by_locker_id(locker_id)
-        await switch_on_handler(locker[4])
-        asyncio.create_task(delayed_switch_off(locker[4]))
+        await switch_on_handler(locker_id)
+        asyncio.create_task(delayed_switch_off(locker_id))
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -751,9 +818,9 @@ async def adm_reserve(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
-        state1 = await get_entity_state(locker[4], config.tg_bot.ha_url, config.tg_bot.ha_token)
-        state2 = await get_entity_state(locker[5], config.tg_bot.ha_url, config.tg_bot.ha_token)
-        await call.message.answer(f'Статус для комірки {locker[2]} ID{locker[0]}:\n'
+        state1, state2 = await get_locker_states(locker)
+        station_label = _station_label(locker[1])
+        await call.message.answer(f'Статус для комірки {locker[2]} ({station_label}) ID{locker[0]}:\n'
                                   f'🔓 Замок - {state1}\n'
                                   f'🚪 двері - {state2}')
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
@@ -767,11 +834,15 @@ async def locker_action(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
+        if not locker:
+            await call.message.answer('Комірку не знайдено')
+            return
+        station_label = _station_label(locker[1])
         buttons = []
         buttons.append(
-            [InlineKeyboardButton(text=f'🔓 Відкрити ком.{locker[2]}', callback_data=f'adm_openLocker:{locker_id}')])
+            [InlineKeyboardButton(text=f'🔓 Відкрити ком.{locker[2]} ({station_label})', callback_data=f'adm_openLocker:{locker_id}')])
         buttons.append(
-            [InlineKeyboardButton(text=f'♻️ Резервація  ком.{locker[2]}', callback_data=f'adm_reserve:{locker_id}')])
+            [InlineKeyboardButton(text=f'♻️ Резервація  ком.{locker[2]} ({station_label})', callback_data=f'adm_reserve:{locker_id}')])
         buttons.append(
             [InlineKeyboardButton(text=f'➖ Завершити повязані оренди', callback_data=f'adm_close_rent:{locker_id}')])
         buttons.append([InlineKeyboardButton(text=f'Статус сенсорів', callback_data=f'test:{locker_id}')])
@@ -838,12 +909,7 @@ async def get_photo(message: Message):
                 await bot.send_message(admin, "✅ Користувач оновив платіний документ. Потрібо перевірити",
                                        reply_markup=kb.admin_menu)
         else:
-            for admin in config.tg_bot.admin_ids:
-                now = datetime.now()
-                create_date = now.strftime("%d.%m.%Y %H:%M")
-                db.add_new_surcharge(message.from_user.id, file_type, file_id, create_date)
-                text_perlimit = 'Користувач надіслав фото з доплатою, потрібно перевірити'
-                await bot.send_message(admin, text_perlimit)
+            await message.answer('Для оплати фото не потрібне. Після транзакції підтвердження приходить автоматично.')
     except Exception as e:
         log_exception(e)
 
@@ -851,8 +917,9 @@ async def get_photo(message: Message):
 @router.message(Command("get_info_1"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("sensor.gpio_sensor_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
-        print("sensor.gpio_sensor_1 Стан:", state)
+        await message.answer(
+            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
+        )
     except Exception as e:
         log_exception(e)
         return "Помилка при отриманні стану сутності."
@@ -861,8 +928,9 @@ async def start(message: Message):
 @router.message(Command("get_info_2"))
 async def start(message: Message):
     try:
-        state = await get_entity_state("switch.local_switch_1", config.tg_bot.ha_url, config.tg_bot.ha_token)
-        print("switch.local_switch_1 Стан:", state)
+        await message.answer(
+            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
+        )
     except Exception as e:
         log_exception(e)
         return "Помилка при отриманні стану сутності."
@@ -876,29 +944,68 @@ def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool
     }
     payload = {"entity_id": entity_id}
 
-    response = requests.post(url, json=payload, headers=headers)
-    return response.status_code == 200
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=(3, 5))
+        return response.status_code == 200
+    except requests.RequestException as e:
+        print(f"🚨 HA request error: {e}")
+        return False
 
 
-async def switch_on_handler(locker_item):
-    success = toggle_switch("turn_on", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
+def _normalize_ha_url(url: str) -> str:
+    normalized = (url or '').strip()
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"http://{normalized}"
+
+
+def _station_ha_for_locker(locker_id: int):
+    locker = db.get_locker_by_locker_id(locker_id)
+    if not locker:
+        raise RuntimeError(f"Комірку {locker_id} не знайдено")
+
+    station = db.get_station_by_id(locker[1])
+    if not station:
+        raise RuntimeError(f"Станцію {locker[1]} не знайдено")
+
+    ha_url = (station[7] or '').strip()
+    ha_token = (station[8] or '').strip()
+    auto_lock_delay = int(station[9] or 15)
+    if not ha_url or not ha_token:
+        raise RuntimeError(f"Для станції #{station[0]} не налаштований station-level Home Assistant")
+
+    return _normalize_ha_url(ha_url), ha_token, max(1, auto_lock_delay), locker
+
+
+async def get_locker_states(locker):
+    ha_url, ha_token, _, _ = _station_ha_for_locker(int(locker[0]))
+    state1 = await get_entity_state(locker[4], ha_url, ha_token)
+    state2 = await get_entity_state(locker[5], ha_url, ha_token)
+    return state1, state2
+
+
+async def switch_on_handler(locker_id: int):
+    ha_url, ha_token, _, locker = _station_ha_for_locker(int(locker_id))
+    success = await asyncio.to_thread(toggle_switch, "turn_on", ha_url, ha_token, locker[4])
     if success:
         print("✅ Перемикач увімкнено!")
     else:
-        print("❌ Не вдалося увімкнути перемикач.")
+        raise RuntimeError(f"Не вдалося увімкнути перемикач {locker[4]}")
 
 
-async def switch_off_handler(locker_item):
-    success = toggle_switch("turn_off", config.tg_bot.ha_url, config.tg_bot.ha_token, locker_item)
+async def switch_off_handler(locker_id: int):
+    ha_url, ha_token, _, locker = _station_ha_for_locker(int(locker_id))
+    success = await asyncio.to_thread(toggle_switch, "turn_off", ha_url, ha_token, locker[4])
     if success:
         print("✅ Перемикач вимкнено!")
     else:
-        print("❌ Не вдалося вимкнути перемикач.")
+        print(f"❌ Не вдалося вимкнути перемикач {locker[4]}.")
 
 
-async def delayed_switch_off(entity_id: str, delay: int = 15):
+async def delayed_switch_off(locker_id: int):
+    _, _, delay, _ = _station_ha_for_locker(int(locker_id))
     await asyncio.sleep(delay)
-    await switch_off_handler(entity_id)
+    await switch_off_handler(locker_id)
 
 
 # f_locker_status
@@ -913,11 +1020,11 @@ async def f_locker_status(callback: CallbackQuery):
             buttons = []
             for stations in active_stations:
                 stations_id = stations[0]
-                stations_name = stations[1]
                 stations_loc = stations[2]
+                station_label = stations_loc if stations_loc else f"Станція #{stations_id}"
 
                 buttons.append([InlineKeyboardButton(
-                    text=f"{stations_name} - {stations_loc}",
+                    text=station_label,
                     callback_data=f"f_locker_status:{stations_id}"
                 )])
 
@@ -951,7 +1058,8 @@ async def f_locker_status(call: CallbackQuery):
                 locker_name = locker[2]
                 locker_status = locker[3]
                 kit = db.get_inventory_kit_by_locker_and_station_id(stations_id, locker_id)
-                locker_text = f'{locker_name} | {kit[1]} | {locker_status}'
+                station_label = _station_label(locker[1])
+                locker_text = f'{locker_name} ({station_label}) | {kit[1]} | {locker_status}'
                 callback_data = f"f_locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status')])
@@ -972,6 +1080,7 @@ async def f_locker_action(call: CallbackQuery):
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
         kit = db.get_inventory_kit_by_locker_and_station_id(locker[1], locker[0])
+        station_label = _station_label(locker[1])
 
         buttons = []
         buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
@@ -981,10 +1090,9 @@ async def f_locker_action(call: CallbackQuery):
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-        state1 = await get_entity_state(locker[4], config.tg_bot.ha_url, config.tg_bot.ha_token)
-        state2 = await get_entity_state(locker[5], config.tg_bot.ha_url, config.tg_bot.ha_token)
+        state1, state2 = await get_locker_states(locker)
 
-        locker_text = f'Комірка {locker[2]}\n' \
+        locker_text = f'Комірка {locker[2]} ({station_label})\n' \
                       f'Тип: {kit[1]}\n' \
                       f'Статус: {locker[3]}\n' \
                       f'Замок: {state1}\n' \
@@ -1002,8 +1110,8 @@ async def f_adm_openLocker(call: CallbackQuery):
         await bot.answer_callback_query(call.id)
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
-        await switch_on_handler(locker[4])
-        asyncio.create_task(delayed_switch_off(locker[4]))
+        await switch_on_handler(locker_id)
+        asyncio.create_task(delayed_switch_off(locker_id))
 
         buttons = []
         buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
@@ -1139,7 +1247,7 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"TGU: @{user_info[2]}\n" \
                                  f"Телефон: {user_info[4]}\n" \
                                  f"Створено: {rent[11]}\n" \
-                                 f"Комірка: {locker[2]} | {locker[3]}\n" \
+                                 f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
                                  f"Час оренди: {rent[4]}хв\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
@@ -1278,7 +1386,7 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"TGU: @{user_info[2]}\n" \
                                  f"Телефон: {user_info[4]}\n" \
                                  f"Створено: {rent[11]}\n" \
-                                 f"Комірка: {locker[2]} | {locker[3]}\n" \
+                                 f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
                                  f"Час оренди: {rent[4]}хв\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \

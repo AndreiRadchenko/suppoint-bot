@@ -1,4 +1,5 @@
 import base64
+from contextlib import suppress
 from datetime import datetime
 
 from aiogram import Router, F, types
@@ -13,9 +14,42 @@ from create_bot import bot
 from helper.helper import clear_messages, log_exception, get_entity_state
 from kb import kb
 from config_data.config import Config, load_config
+from services.payments import PaymentService
 
 config: Config = load_config()
 db = Database(config.db.path)
+payment_service = PaymentService()
+
+
+def _normalize_ha_url(url: str) -> str:
+    normalized = (url or '').strip()
+    if normalized.startswith("http://") or normalized.startswith("https://"):
+        return normalized
+    return f"http://{normalized}"
+
+
+def _station_ha_for_locker(locker):
+    station = db.get_station_by_id(locker[1])
+    if not station:
+        raise RuntimeError(f"Станцію {locker[1]} не знайдено")
+
+    ha_url = (station[7] or '').strip()
+    ha_token = (station[8] or '').strip()
+    if not ha_url or not ha_token:
+        raise RuntimeError(f"Для станції #{station[0]} не налаштований station-level Home Assistant")
+
+    return _normalize_ha_url(ha_url), ha_token
+
+
+def _station_label(station_id: int) -> str:
+    station = db.get_station_by_id(station_id)
+    if not station:
+        return f"Станція #{station_id}"
+
+    station_location = (station[2] or "").strip()
+    if station_location:
+        return station_location
+    return f"Станція #{station_id}"
 
 
 class RentFinishFSM(StatesGroup):
@@ -96,10 +130,11 @@ async def start_rent_finish(callback: CallbackQuery, state: FSMContext):
         locker_id = rent[3]
         current_locker = db.get_locker_by_locker_id(locker_id)
         inventory_kit = db.get_inventory_kit_by_locker_and_station_id(rent[2], locker_id)
+        station_label = _station_label(rent[2])
 
         await state.update_data(locker_id=locker_id)
 
-        fin_text = f'⏳ Кінець оренди: Комірка {current_locker[2]} {inventory_kit[1]}. \n\n' \
+        fin_text = f'⏳ Кінець оренди: Комірка {current_locker[2]} ({station_label}) {inventory_kit[1]}. \n\n' \
                    '✨ Переконайтесь, що спорядження чисте та неушкоджене перед поверненням.\n' \
                    '📦 Заберіть всі свої речі з комірки.\n' \
                    '❗️ Якщо щось пошкоджено або зіпсовано — надішліть фото та коротке повідомлення в 🛟Підтримку\n\n' \
@@ -108,7 +143,7 @@ async def start_rent_finish(callback: CallbackQuery, state: FSMContext):
                    '🚣‍♀️ Весло\n' \
                    '🦺 Рятувальний жилет\n' \
                    '📱 Водонепроникний чохол для телефону\n\n' \
-                   f'📸 <strong>Надішліть фото комплекту {inventory_kit[1]} в Комірка {current_locker[2]}</strong>'
+                   f'📸 <strong>Надішліть фото комплекту {inventory_kit[1]} в Комірка {current_locker[2]} ({station_label})</strong>'
         photo_kit = FSInputFile("media/kit.jpg")
 
         await bot.send_photo(callback.from_user.id, photo=photo_kit, caption=fin_text, reply_markup=back_menu)
@@ -136,15 +171,31 @@ async def photo_received(message: Message, state: FSMContext):
             file_id = message.document.file_id
 
         db.rent_update_complect_photo(file_type, file_id, rent_id)
+        rent = db.get_rent_by_id(rent_id) if rent_id else None
+        station_location = _station_label(rent[2]) if rent else "Невідома локація"
+        locker_number = "?"
+        start_time = "Невідомо"
+
+        if rent:
+            start_time = rent[11] or "Невідомо"
+            locker = db.get_locker_by_locker_id(rent[3])
+            if locker:
+                locker_number = locker[2]
+
+        admin_caption = (
+            f"Комплектація до звершення Ореннди {rent_id}\n"
+            f"Локація: {station_location}\n"
+            f"Комірка: {locker_number}\n"
+            f"Початок оренди: {start_time}"
+        )
+
         for admin in config.tg_bot.admin_ids:
             if file_type == "document":
-                await bot.send_document(admin, file_id, caption=f'Комплектація до звершення Ореннди {rent_id}',
-                                        reply_markup=kb.admin_menu,
-                                        parse_mode="Markdown")
+                await bot.send_document(admin, file_id, caption=admin_caption,
+                                        reply_markup=kb.admin_menu)
             else:
-                await bot.send_photo(admin, file_id, caption=f'Комплектація до звершення Ореннди {rent_id}',
-                                     reply_markup=kb.admin_menu,
-                                     parse_mode="Markdown")
+                await bot.send_photo(admin, file_id, caption=admin_caption,
+                                     reply_markup=kb.admin_menu)
 
         await state.update_data(file_type=file_type, file_id=file_id)
 
@@ -167,12 +218,42 @@ async def photo_received(message: Message, state: FSMContext):
 @router.callback_query(RentFinishFSM.waiting_for_confirmation, F.data == "confirm_rent_finish")
 async def finish_rent(callback: CallbackQuery, state: FSMContext):
     try:
+        with suppress(TelegramBadRequest):
+            await callback.answer("Перевіряю стан комірки...")
+
         info = await state.get_data()
         locker_id = info.get('locker_id')
         current_locker = db.get_locker_by_locker_id(locker_id)
+        if not current_locker:
+            await callback.message.answer("⚠️ Не вдалося знайти комірку. Спробуйте завершити оренду ще раз.")
+            return
+
         sensor = current_locker[5]
-        sensor_status = await get_entity_state(sensor, config.tg_bot.ha_url, config.tg_bot.ha_token)
-        if sensor_status == 'close':
+        print('sensor', sensor)
+        try:
+            ha_url, ha_token = _station_ha_for_locker(current_locker)
+        except RuntimeError as exc:
+            await callback.message.answer(f"⚠️ {exc}")
+            return
+
+        sensor_status = await get_entity_state(sensor, ha_url, ha_token)
+        print('sensor_status', sensor_status)
+        if sensor_status is None:
+            confirm_btn = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🔁 Спробувати ще раз", callback_data="confirm_rent_finish")],
+                    [InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")],
+                ]
+            )
+            await callback.message.answer(
+                "⚠️ Не вдалося зв'язатися зі станцією, вона зараз недоступна. "
+                "Спробуйте ще раз за хвилину або скасуйте завершення оренди.",
+                reply_markup=confirm_btn
+            )
+            await state.set_state(RentFinishFSM.waiting_for_confirmation)
+            return
+
+        if sensor_status == 'close' or sensor_status == 'closed' or sensor_status == 'off' or sensor_status == 'False' or sensor_status == 'false':
             data = await state.get_data()
             rent_id = data.get("rent_id")
             rent = db.get_rent_by_id(rent_id)
@@ -184,10 +265,10 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                 if len(rent_counter) > 0:
                     await callback.message.answer(f"✅ Оренду №{rent_id} завершено. Дякуємо!\n\nУ вас залишилися оренди, які ще не завершено.", reply_markup=kb.user_menu)
                 else:
+
                     await callback.message.answer(f"✅ Оренду №{rent_id} завершено. Дякуємо!")
                 await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
                 await state.clear()
-                await callback.answer()
             else:
                 base_time = rent[4]
                 base_pay = rent[5]
@@ -229,14 +310,20 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                         await callback.message.answer(f"✅ Оренду №{rent_id} завершено. Дякуємо!")
                     await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
                     await state.clear()
-                    await callback.answer()
                 else:
-                    price_url = generate_bank_qr_url(
-                        payer_name=config.payment.payer_name,
-                        iban=config.payment.iban,
-                        amount=fin_pay,
-                        edrpou=config.payment.edrpou,
-                        purpose=config.payment.purpose,
+                    station = db.get_station_by_id(rent[2])
+                    station_name = (station[1] if station and station[1] else f"#{rent[2]}").strip()
+                    station_location = (station[2] if station and station[2] else "").strip()
+                    if station_location:
+                        topup_destination = f"Доплата за оренду #{rent_id}. Станція: {station_name} ({station_location})"
+                    else:
+                        topup_destination = f"Доплата за оренду #{rent_id}. Станція: {station_name}"
+
+                    price_url = await payment_service.create_topup_invoice(
+                        rent_id=rent_id,
+                        tg_id=rent[1],
+                        amount_grn=fin_pay,
+                        destination=topup_destination,
                     )
 
                     db.rent_update_surcharge(fin_pay, rent_id)
@@ -249,7 +336,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     await callback.message.answer('💰Доплата:\n'
                                                   f'Мабуть, ваша прогулянка була надто крута 😎 Трохи перевищили оренду, тож просимо доплатити {fin_pay} грн 🪙\n'
                                                   f'⏱️ Загальна тривалість оренди склала {total_time} хв.\n'
-                                                  '📸 Надішліть, будь ласка, фото у бот для підтвердження.\n'
+                                                  '⚡️ Після оплати підтвердження відбудеться автоматично.\n'
                                                   '🙌 Дякуємо, що обираєте нас та чекаємо знову!'
                                                   , reply_markup=pay_menu)
 
@@ -257,10 +344,10 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     db.add_total_time(total_time, rent[0])
                     await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
                     await state.clear()
-                    await callback.answer()
             db.locker_status("Доступна оренда", rent[3])
         else:
             print('Ой не закрито')
+            station_label = _station_label(current_locker[1])
             confirm_btn = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="🔒 Кінець оренди", callback_data="confirm_rent_finish")],
@@ -268,11 +355,15 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                 ]
             )
             await callback.message.answer(
-                f"Комірка {current_locker[2]} не закрита. Закрийте та натисніть 🔒 Кінець оренди ще аз:",
+                f"Комірка {current_locker[2]} ({station_label}) не закрита. Закрийте та натисніть 🔒 Кінець оренди ще аз:",
                 reply_markup=confirm_btn
             )
             await state.set_state(RentFinishFSM.waiting_for_confirmation)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
+        with suppress(TelegramBadRequest):
+            await callback.message.answer(
+                "⚠️ Не вдалося завершити оренду через технічну помилку. Спробуйте ще раз пізніше."
+            )
 

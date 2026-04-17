@@ -1,5 +1,6 @@
 from create_bot import bot
 import logging
+import asyncio
 from config_data.config import Config, load_config
 import aiohttp
 config: Config = load_config()
@@ -25,11 +26,18 @@ async def get_entity_state(entity_id: str, url: str, token: str):
         "Content-Type": "application/json",
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url, headers=headers) as response:
-            if response.status == 200:
-                data = await response.json()
-                return data.get("state")
-            else:
-                print(f"Помилка: {response.status}")
+    timeout = aiohttp.ClientTimeout(total=6, sock_connect=4, sock_read=4)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(api_url, headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("state")
+                logging.warning("HA state request failed for %s with status %s", entity_id, response.status)
                 return None
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        logging.warning("HA state request error for %s: %s", entity_id, exc)
+        return None
+    except Exception as exc:
+        logging.exception("Unexpected HA state request error for %s: %s", entity_id, exc)
+        return None

@@ -24,7 +24,9 @@ btn6 = InlineKeyboardButton(text="Оренди", callback_data="rent_by_day")
 btn7 = InlineKeyboardButton(text="📦 Комірки", callback_data="f_locker_status")
 btn8 = InlineKeyboardButton(text="🛶 Оренди", callback_data="f_rent")
 btn9 = InlineKeyboardButton(text="📊 Статистика", callback_data="f_statistic")
+btn10 = InlineKeyboardButton(text="🏢 Станції", callback_data="station_management")
 admin_menu = InlineKeyboardMarkup(inline_keyboard=[
+    [btn10],
     [btn7],
     [btn8],
     [btn9],
