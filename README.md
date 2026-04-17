@@ -37,6 +37,73 @@ pip install watchdog
 watchmedo auto-restart --patterns="*.py" --recursive -- python bot.py
 ```
 
+## Run in background with systemd
+
+Use prepared service files from this repository:
+- `deploy/systemd/suppoint-bot.service` — production mode
+- `deploy/systemd/suppoint-bot-dev.service` — development mode with auto-restart on `*.py` changes
+
+Install service files:
+```bash
+sudo cp deploy/systemd/suppoint-bot.service /etc/systemd/system/
+sudo cp deploy/systemd/suppoint-bot-dev.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+Production service (recommended on server):
+```bash
+sudo systemctl enable suppoint-bot
+sudo systemctl start suppoint-bot
+sudo systemctl status suppoint-bot
+journalctl -u suppoint-bot -f
+```
+
+Development autoreload service (watchdog):
+```bash
+source .venv/bin/activate
+pip install watchdog
+
+sudo systemctl enable suppoint-bot-dev
+sudo systemctl start suppoint-bot-dev
+sudo systemctl status suppoint-bot-dev
+journalctl -u suppoint-bot-dev -f
+```
+
+Service management:
+```bash
+sudo systemctl restart suppoint-bot
+sudo systemctl stop suppoint-bot
+sudo systemctl disable suppoint-bot
+
+sudo systemctl restart suppoint-bot-dev
+sudo systemctl stop suppoint-bot-dev
+sudo systemctl disable suppoint-bot-dev
+```
+
+Notes:
+
+- No need to run `source .venv/bin/activate` for normal service starts.
+- Auto-start after server reboot is handled by `systemctl enable`.
+- Auto-restart after crash is handled by `Restart=always`.
+- Dependencies must be installed in the same venv used by the service (`/home/andrii/suppoint-bot/.venv`).
+- After any `requirements.txt` update, run install again and restart the service.
+
+Install/refresh dependencies for the service venv:
+```bash
+cd /home/andrii/suppoint-bot
+source .venv/bin/activate
+pip install -r requirements.txt
+sudo systemctl restart suppoint-bot
+```
+
+If you use `suppoint-bot-dev.service`, make sure `watchdog` is installed in the same venv:
+```bash
+cd /home/andrii/suppoint-bot
+source .venv/bin/activate
+pip install watchdog
+sudo systemctl restart suppoint-bot-dev
+```
+
 Docker:
 ```bash
 docker run --rm -it --env-file .env suppoint-bot
@@ -61,9 +128,9 @@ A **Telegram bot for SUP (Stand-Up Paddleboard) rental management** integrated w
 | **Export** | `pandas` + `openpyxl` | Excel report generation |
 | **Language** | Python 3 (asyncio) | Runtime |
 
-**Dependencies to install** (no `requirements.txt` exists):
+**Dependencies to install**:
 ```bash
-pip install aiogram aiohttp pandas openpyxl environs apscheduler requests
+pip install -r requirements.txt
 ```
 
 ---

@@ -1,0 +1,19 @@
+[Unit]
+Description=SUPPOINT Telegram Bot (production)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=andrii
+WorkingDirectory=/home/andrii/suppoint-bot
+EnvironmentFile=/home/andrii/suppoint-bot/.env
+ExecStart=/home/andrii/suppoint-bot/.venv/bin/python /home/andrii/suppoint-bot/bot.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
