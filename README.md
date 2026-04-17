@@ -297,11 +297,30 @@ BOT_TOKEN=your_telegram_bot_token
 ADMINS=123456789,987654321
 HA_URL=http://your-homeassistant-ip:8123
 HA_TOKEN=your_long_lived_access_token
+
+# Optional: fiscal receipt pipeline (Checkbox)
+CHECKBOX_ENABLED=false
+CHECKBOX_MODE=test
+# CHECKBOX_MODE=live
+CHECKBOX_API_BASE_URL=https://api.checkbox.in.ua
+CHECKBOX_TEST_TOKEN=
+CHECKBOX_LIVE_TOKEN=
+# Legacy fallback token (optional)
+CHECKBOX_API_TOKEN=
+CHECKBOX_SELL_ENDPOINT=/api/v1/receipts/sell
+CHECKBOX_STATUS_ENDPOINT=/api/v1/receipts/{receipt_id}
+CHECKBOX_REQUEST_TIMEOUT_SEC=20
+FISCAL_RETRY_INTERVAL_SEC=60
+FISCAL_RETRY_WINDOW_MIN=15
+
+# Optional: send payment receipt to fallback email via Monobank endpoint
+MONO_RECEIPT_EMAIL_FALLBACK=
 ```
 
 Note:
 - `HA_URL` and `HA_TOKEN` can remain for legacy compatibility, but station operations are resolved from `stations` table station-level HA fields.
 - For each active station, configure `ha_url_or_ip` and `ha_token` in DB.
+- Keep `CHECKBOX_ENABLED=false` until Checkbox API credentials are verified in staging.
 
 ### 4. Apply missing DB migrations
 ```bash

@@ -1,6 +1,8 @@
 import json
 import hashlib
 import logging
+import asyncio
+from contextlib import suppress
 from base64 import b64decode
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,6 +13,7 @@ from ecdsa.util import sigdecode_der
 from config_data.config import Config, load_config
 from create_bot import bot
 from db import Database
+from .checkbox_client import CheckboxClient, FiscalResult
 from .monobank_client import MonobankClient
 
 
@@ -30,6 +33,7 @@ class PaymentService:
         self.config: Config = load_config()
         self.db = Database(self.config.db.path)
         self.client = MonobankClient(self._resolve_token())
+        self.checkbox_client = CheckboxClient(self.config)
         self._pubkey_value: Optional[str] = None
         self._pubkey_expires_at: Optional[datetime] = None
 
@@ -267,6 +271,7 @@ class PaymentService:
                 "🚪 Доступ до комірки відкрито.\n"
                 "Перейдіть у розділ 🛶 Мої оренди та натисніть 🔓 Відкрити комірку.",
             )
+            asyncio.create_task(self._start_fiscalization(tx, invoice_id))
             return
 
         if payment_type == "topup" and rent_id:
@@ -280,6 +285,203 @@ class PaymentService:
                 tg_id,
                 "✅ Доплату підтверджено автоматично. Дякуємо, оренду завершено.",
             )
+            asyncio.create_task(self._start_fiscalization(tx, invoice_id))
+
+    def _resolve_station_location_for_tx(self, tx) -> str:
+        station_id = tx[5]
+        if not station_id and tx[3]:
+            rent = self.db.get_rent_by_id(tx[3])
+            if rent:
+                station_id = rent[2]
+
+        if not station_id:
+            return "Невідома локація"
+
+        station = self.db.get_station_by_id(station_id)
+        if not station:
+            return f"Станція #{station_id}"
+        return station[2] or f"Станція #{station_id}"
+
+    def _build_checkbox_sale_payload(self, tx, invoice_id: str) -> dict:
+        payment_type = tx[1]
+        amount_minor = int(tx[7] or 0)
+        reference = tx[9] or invoice_id
+        location = self._resolve_station_location_for_tx(tx)
+
+        item_name = "Оренда SUP"
+        item_code = "SUP_RENTAL"
+        if payment_type == "topup":
+            item_name = "Доплата за оренду SUP"
+            item_code = "SUP_TOPUP"
+
+        item_name = f"{item_name} ({location})"
+
+        return {
+            "reference": reference,
+            "invoice_id": invoice_id,
+            "sum": amount_minor,
+            "goods": [
+                {
+                    "code": item_code,
+                    "name": item_name,
+                    "price": amount_minor,
+                    "quantity": 1,
+                }
+            ],
+        }
+
+    async def _send_receipt_email_if_configured(self, invoice_id: str) -> None:
+        email = (self.config.payment.mono_receipt_email_fallback or "").strip()
+        if not email:
+            return
+
+        try:
+            await self.client.send_receipt_email(invoice_id, email)
+        except Exception as error:
+            logging.warning("Failed to send receipt email for %s: %s", invoice_id, error)
+
+    async def _notify_fiscal_receipt(self, tx, invoice_id: str, fiscal_result: FiscalResult) -> None:
+        tg_id = tx[2]
+        receipt_url = fiscal_result.receipt_url
+
+        if receipt_url:
+            await bot.send_message(
+                tg_id,
+                "🧾 Фіскальний чек сформовано.\n"
+                f"Посилання на чек: {receipt_url}",
+            )
+        else:
+            await bot.send_message(
+                tg_id,
+                "🧾 Оплату фіскалізовано, але посилання на чек поки недоступне.",
+            )
+
+        if fiscal_result.pdf_url:
+            with suppress(Exception):
+                await bot.send_document(
+                    tg_id,
+                    fiscal_result.pdf_url,
+                    caption="PDF чека",
+                )
+
+        await self._send_receipt_email_if_configured(invoice_id)
+
+    async def _start_fiscalization(self, tx, invoice_id: str) -> None:
+        if not self.checkbox_client.enabled:
+            logging.info("Checkbox fiscalization is disabled, skip invoice %s", invoice_id)
+            return
+
+        if len(tx) > 19 and tx[19] in {"success", "failed"}:
+            return
+
+        self.db.update_payment_transaction_fiscal(
+            invoice_id=invoice_id,
+            fiscal_status="pending",
+            fiscal_provider="checkbox",
+            fiscal_error=None,
+        )
+
+        payload = self._build_checkbox_sale_payload(tx, invoice_id)
+        result = await self.checkbox_client.create_sale_receipt(payload)
+
+        if result.status == "success":
+            self.db.update_payment_transaction_fiscal(
+                invoice_id=invoice_id,
+                fiscal_status="success",
+                receipt_url=result.receipt_url,
+                fiscal_external_id=result.receipt_id,
+                fiscal_provider="checkbox",
+                fiscal_error=None,
+            )
+            await self._notify_fiscal_receipt(tx, invoice_id, result)
+            return
+
+        if result.status == "failed":
+            self.db.update_payment_transaction_fiscal(
+                invoice_id=invoice_id,
+                fiscal_status="failed",
+                fiscal_external_id=result.receipt_id,
+                fiscal_provider="checkbox",
+                fiscal_error=result.error_text,
+            )
+            return
+
+        self.db.update_payment_transaction_fiscal(
+            invoice_id=invoice_id,
+            fiscal_status="processing",
+            fiscal_external_id=result.receipt_id,
+            fiscal_provider="checkbox",
+            fiscal_error=result.error_text,
+        )
+
+    def _is_fiscal_retry_expired(self, tx) -> bool:
+        window_min = max(1, int(self.config.payment.fiscal_retry_window_min))
+        base_value = tx[16] or tx[15]
+        if not base_value:
+            return False
+
+        try:
+            base_dt = datetime.fromisoformat(base_value)
+        except Exception:
+            return False
+
+        return datetime.utcnow() > base_dt + timedelta(minutes=window_min)
+
+    async def reconcile_fiscal_transactions(self):
+        if not self.checkbox_client.enabled:
+            return
+
+        pending = self.db.get_pending_fiscal_transactions()
+        for tx in pending:
+            invoice_id = tx[10]
+            fiscal_status = tx[19] if len(tx) > 19 and tx[19] else "not_started"
+            fiscal_external_id = tx[20] if len(tx) > 20 else None
+
+            if self._is_fiscal_retry_expired(tx):
+                self.db.update_payment_transaction_fiscal(
+                    invoice_id=invoice_id,
+                    fiscal_status="failed",
+                    fiscal_provider="checkbox",
+                    fiscal_error="Fiscal retry window expired",
+                )
+                continue
+
+            if fiscal_status == "not_started":
+                await self._start_fiscalization(tx, invoice_id)
+                continue
+
+            if fiscal_status in {"pending", "processing"} and not fiscal_external_id:
+                await self._start_fiscalization(tx, invoice_id)
+                continue
+
+            if fiscal_status in {"pending", "processing"} and fiscal_external_id:
+                result = await self.checkbox_client.get_receipt_status(str(fiscal_external_id))
+                if result.status == "success":
+                    self.db.update_payment_transaction_fiscal(
+                        invoice_id=invoice_id,
+                        fiscal_status="success",
+                        receipt_url=result.receipt_url,
+                        fiscal_external_id=result.receipt_id or str(fiscal_external_id),
+                        fiscal_provider="checkbox",
+                        fiscal_error=None,
+                    )
+                    await self._notify_fiscal_receipt(tx, invoice_id, result)
+                elif result.status == "failed":
+                    self.db.update_payment_transaction_fiscal(
+                        invoice_id=invoice_id,
+                        fiscal_status="failed",
+                        fiscal_external_id=result.receipt_id or str(fiscal_external_id),
+                        fiscal_provider="checkbox",
+                        fiscal_error=result.error_text,
+                    )
+                else:
+                    self.db.update_payment_transaction_fiscal(
+                        invoice_id=invoice_id,
+                        fiscal_status="processing",
+                        fiscal_external_id=result.receipt_id or str(fiscal_external_id),
+                        fiscal_provider="checkbox",
+                        fiscal_error=result.error_text,
+                    )
 
     async def _enrich_urls_from_status(self, invoice_id: str) -> tuple[Optional[str], Optional[str]]:
         try:

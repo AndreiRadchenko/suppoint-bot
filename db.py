@@ -47,7 +47,12 @@ class Database:
                         created_at TEXT NOT NULL,
                         paid_at TEXT,
                         updated_at TEXT NOT NULL,
-                        invoice_url TEXT
+                        invoice_url TEXT,
+                        fiscal_status TEXT NOT NULL DEFAULT 'not_started',
+                        fiscal_external_id TEXT,
+                        fiscal_provider TEXT,
+                        fiscal_error TEXT,
+                        fiscal_updated_at TEXT
                     )
                     """
                 )
@@ -95,6 +100,16 @@ class Database:
                 if self._table_exists(cursor, 'payment_transactions'):
                     if not self._column_exists(cursor, 'payment_transactions', 'invoice_url'):
                         cursor.execute("ALTER TABLE payment_transactions ADD COLUMN invoice_url TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_status'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_status TEXT NOT NULL DEFAULT 'not_started'")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_external_id'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_external_id TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_provider'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_provider TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_error'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_error TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_updated_at'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_updated_at TEXT")
 
                 conn.commit()
         except sqlite3.Error as e:
@@ -660,6 +675,8 @@ class Database:
             checkout_url,
                 status='pending',
                 invoice_url=None,
+                fiscal_status='not_started',
+                fiscal_provider='checkbox',
     ):
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -670,13 +687,15 @@ class Database:
                     INSERT OR REPLACE INTO payment_transactions (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, created_at, updated_at, invoice_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        checkout_url, status, created_at, updated_at, invoice_url,
+                        fiscal_status, fiscal_provider, fiscal_updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, now, now, invoice_url
+                        checkout_url, status, now, now, invoice_url,
+                        fiscal_status, fiscal_provider, now
                     )
                 )
                 conn.commit()
@@ -724,6 +743,62 @@ class Database:
                 conn.commit()
         except sqlite3.Error as e:
             print("Помилка update_payment_transaction_status:", e)
+
+    def update_payment_transaction_fiscal(
+        self,
+        invoice_id,
+        fiscal_status,
+        receipt_url=None,
+        fiscal_external_id=None,
+        fiscal_provider='checkbox',
+        fiscal_error=None,
+    ):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.utcnow().isoformat()
+                cursor.execute(
+                    """
+                    UPDATE payment_transactions
+                    SET fiscal_status = ?,
+                        receipt_url = COALESCE(?, receipt_url),
+                        fiscal_external_id = COALESCE(?, fiscal_external_id),
+                        fiscal_provider = COALESCE(?, fiscal_provider),
+                        fiscal_error = ?,
+                        fiscal_updated_at = ?,
+                        updated_at = ?
+                    WHERE external_invoice_id = ?
+                    """,
+                    (
+                        fiscal_status,
+                        receipt_url,
+                        fiscal_external_id,
+                        fiscal_provider,
+                        fiscal_error,
+                        now,
+                        now,
+                        invoice_id,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка update_payment_transaction_fiscal:", e)
+
+    def get_pending_fiscal_transactions(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    """
+                    SELECT *
+                    FROM payment_transactions
+                    WHERE status = 'success'
+                      AND COALESCE(fiscal_status, 'not_started') IN ('not_started', 'pending', 'processing')
+                    """
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_pending_fiscal_transactions:", e)
+            return []
 
     def get_rent_by_tg_station_and_locker_ids(self, tg_id, station_id, locker_ids, status):
         try:

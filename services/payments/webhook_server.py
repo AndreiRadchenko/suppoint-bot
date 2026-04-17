@@ -40,8 +40,9 @@ class MonobankWebhookServer:
 
     async def _reconcile_loop(self):
         while True:
-            await asyncio.sleep(90)
+            await asyncio.sleep(max(10, int(self.config.payment.fiscal_retry_interval_sec)))
             await self.payment_service.reconcile_pending_transactions()
+            await self.payment_service.reconcile_fiscal_transactions()
 
     async def handle_webhook(self, request: web.Request) -> web.Response:
         raw_body = await request.read()

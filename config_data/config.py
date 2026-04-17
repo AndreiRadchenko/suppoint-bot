@@ -30,6 +30,18 @@ class PaymentConfig:
     mono_webhook_public_base: str
     mono_redirect_url: str
     mono_pubkey_cache_ttl: int
+    mono_receipt_email_fallback: str
+    checkbox_enabled: bool
+    checkbox_mode: str
+    checkbox_api_base_url: str
+    checkbox_test_token: str
+    checkbox_live_token: str
+    checkbox_api_token: str
+    checkbox_sell_endpoint: str
+    checkbox_status_endpoint: str
+    checkbox_request_timeout_sec: int
+    fiscal_retry_interval_sec: int
+    fiscal_retry_window_min: int
 
 
 @dataclass
@@ -66,5 +78,17 @@ def load_config(path: str | None = None) -> Config:
             mono_webhook_public_base=env.str('MONO_WEBHOOK_PUBLIC_BASE', default=''),
             mono_redirect_url=env.str('MONO_REDIRECT_URL', default='https://t.me'),
             mono_pubkey_cache_ttl=env.int('MONO_PUBKEY_CACHE_TTL', default=3600),
+            mono_receipt_email_fallback=env.str('MONO_RECEIPT_EMAIL_FALLBACK', default=''),
+            checkbox_enabled=env.bool('CHECKBOX_ENABLED', default=False),
+            checkbox_mode=env.str('CHECKBOX_MODE', default='test').lower(),
+            checkbox_api_base_url=env.str('CHECKBOX_API_BASE_URL', default='https://api.checkbox.in.ua'),
+            checkbox_test_token=env.str('CHECKBOX_TEST_TOKEN', default=''),
+            checkbox_live_token=env.str('CHECKBOX_LIVE_TOKEN', default=''),
+            checkbox_api_token=env.str('CHECKBOX_API_TOKEN', default=''),
+            checkbox_sell_endpoint=env.str('CHECKBOX_SELL_ENDPOINT', default='/api/v1/receipts/sell'),
+            checkbox_status_endpoint=env.str('CHECKBOX_STATUS_ENDPOINT', default='/api/v1/receipts/{receipt_id}'),
+            checkbox_request_timeout_sec=env.int('CHECKBOX_REQUEST_TIMEOUT_SEC', default=20),
+            fiscal_retry_interval_sec=env.int('FISCAL_RETRY_INTERVAL_SEC', default=60),
+            fiscal_retry_window_min=env.int('FISCAL_RETRY_WINDOW_MIN', default=15),
         ),
     )
