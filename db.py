@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 MAX_VISIBLE_STATIONS = 10
@@ -110,6 +111,8 @@ class Database:
                         cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_error TEXT")
                     if not self._column_exists(cursor, 'payment_transactions', 'fiscal_updated_at'):
                         cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_updated_at TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'link_message_id'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN link_message_id INTEGER")
 
                 conn.commit()
         except sqlite3.Error as e:
@@ -235,9 +238,9 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 query = """
-                SELECT DISTINCT SUBSTR(data_create, 1, 10) as rent_date
+                SELECT DISTINCT strftime('%d.%m.%Y', data_create) as rent_date
                 FROM rent
-                ORDER BY rent_date DESC
+                ORDER BY date(data_create) DESC
                 """
                 return [row[0] for row in cursor.execute(query).fetchall()]
         except sqlite3.Error as e:
@@ -250,7 +253,7 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE SUBSTR(data_create, 1, 10) = ?
+                WHERE strftime('%d.%m.%Y', data_create) = ?
                 ORDER BY data_create
                 """
                 return cursor.execute(query, (date_str,)).fetchall()
@@ -264,8 +267,8 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE strftime('%W', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%W', 'now')
-                  AND strftime('%Y', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%Y', 'now')
+                WHERE strftime('%W', data_create) = strftime('%W', 'now')
+                  AND strftime('%Y', data_create) = strftime('%Y', 'now')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -279,8 +282,7 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE date(substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2))
-                      = date('now', 'localtime')
+                WHERE date(data_create) = date('now', 'localtime')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -294,8 +296,8 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE strftime('%m', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%m', 'now')
-                  AND strftime('%Y', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%Y', 'now')
+                WHERE strftime('%m', data_create) = strftime('%m', 'now')
+                  AND strftime('%Y', data_create) = strftime('%Y', 'now')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -724,6 +726,18 @@ class Database:
             print("Помилка get_pending_payment_transactions:", e)
             return []
 
+    def save_link_message_id(self, invoice_id: str, message_id: int):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE payment_transactions SET link_message_id = ? WHERE external_invoice_id = ?",
+                    (message_id, invoice_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка save_link_message_id:", e)
+
     def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None, invoice_url=None):
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -849,7 +863,7 @@ class Database:
                 if row:
                     return row[0]
 
-                create_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+                create_date = datetime.now(ZoneInfo('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
                 cursor.execute(
                     "INSERT INTO surcharge (tg_id, file_type, file_id, date_create, status, to_rent) VALUES (?, ?, ?, ?, ?, ?)",
                     (tg_id, 'none', 'none', create_date, 'Очікує оплату', str(rent_id))

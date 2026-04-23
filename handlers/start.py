@@ -415,7 +415,7 @@ async def station_manage(callback: CallbackQuery):
             f"Локація: {station[2]}\n"
             f"Статус роботи: {station[3]}\n"
             f"Активна: {'так' if is_active else 'ні'}\n"
-            f"Видима для клієнта: {'так' if is_visible else 'ні'}\n"
+            f"Видима для клієнтів: {'так' if is_visible else 'ні'}\n"
             f"Порядок: {sort_order}"
         )
         await callback.message.answer(
@@ -933,7 +933,6 @@ async def start(message: Message):
         )
     except Exception as e:
         log_exception(e)
-        return "Помилка при отриманні стану сутності."
 
 
 def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool:
@@ -1238,7 +1237,10 @@ async def about_actual_rent(call: CallbackQuery):
         else:
             rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
 
+        _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
         buttons = []
+        if rent[12] in _active_statuses:
+            buttons.append([InlineKeyboardButton(text='🔴 Примусово завершити', callback_data=f'adm_force_close_rent:{rent[0]}')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'active_rents')])
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1337,6 +1339,43 @@ async def history_rents(callback: CallbackQuery):
     except Exception as e:
         log_exception(e)
 
+@router.callback_query(F.data.startswith('adm_force_close_rent:'))
+async def adm_force_close_rent(call: CallbackQuery):
+    try:
+        await bot.answer_callback_query(call.id)
+        rent_id = call.data.split(":")[1]
+        rent = db.get_rent_by_id(rent_id)
+        if not rent:
+            await call.message.answer("⚠️ Оренду не знайдено")
+            return
+
+        base_time = int(rent[4] or 0)
+        timer = int(rent[13] or 0)
+
+        if timer >= 0:
+            total_time = base_time
+        else:
+            overtime_min = abs(timer) / 4
+            total = base_time + overtime_min
+            total_time = max(15, round(total / 15) * 15)
+
+        db.add_total_time(total_time, rent[0])
+        db.rent_update_status_and_timer('Завершено адміністратором', 0, rent[0])
+        db.locker_status('Доступна оренда', rent[3])
+
+        await bot.send_message(
+            rent[1],
+            f"✅ Вашу оренду №{rent[0]} завершено адміністратором.",
+            reply_markup=kb.user_menu,
+        )
+        await call.message.answer(
+            f"✅ Оренду №{rent[0]} завершено примусово.\n"
+            f"Загальний час: {total_time} хв.\n"
+            f"Комірку звільнено.",
+            reply_markup=kb.admin_menu,
+        )
+    except Exception as e:
+        log_exception(e)
 
 @router.callback_query(F.data.startswith("f_rent_date_"))
 async def show_rents_by_date(callback: CallbackQuery):

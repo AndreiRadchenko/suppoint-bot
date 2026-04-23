@@ -11,13 +11,20 @@ def log_exception(e):
     pass
 
 
+# async def clear_messages(chat_id, message_id, num_messages=10):
+#     pass  # Message deletion disabled — preserve chat history
+
 async def clear_messages(chat_id, message_id, num_messages=10):
     for i in range(num_messages):
+        mid = message_id - i
         try:
-            await bot.delete_message(chat_id, message_id - i)
+            # edit_message_reply_markup raises if the message has no inline keyboard
+            # (Telegram returns "message is not modified" or similar error).
+            # So if this succeeds, the message had a keyboard — delete it.
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=mid, reply_markup=None)
+            await bot.delete_message(chat_id, mid)
         except Exception:
             pass
-
 
 async def get_entity_state(entity_id: str, url: str, token: str):
     api_url = f"{url}/api/states/{entity_id}"

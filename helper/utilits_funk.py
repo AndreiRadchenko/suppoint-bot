@@ -3,6 +3,7 @@ from create_bot import bot
 from helper.helper import log_exception, get_entity_state
 from config_data.config import Config, load_config
 import aiohttp
+from kb import kb
 
 config: Config = load_config()
 db = Database(config.db.path)
@@ -48,7 +49,8 @@ async def timer():
                         elif rent[13] == 1:
                             await bot.send_message(rent[1], '🕒 Час оренди минув\n'
                                                             'Будь ласка, поверніть спорядження до комірки або продовжіть оренду.\n'
-                                                            '💳 Автоматично буде нарахована доплата згідно з чинним тарифом\n')
+                                                            '💳 Автоматично буде нарахована доплата згідно з чинним тарифом\n',
+                       reply_markup=kb.user_menu)
                             db.valid_until_down(rent[0])
                         else:
                             db.valid_until_down(rent[0])

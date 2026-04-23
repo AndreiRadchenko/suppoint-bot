@@ -44,6 +44,8 @@ class CheckboxClient:
             license_key = (self.config.payment.checkbox_license_key or "").strip()
             if license_key:
                 headers["X-License-Key"] = license_key
+        headers["X-Client-Name"] = (self.config.payment.checkbox_client_name or "SuppointBot").strip()
+        headers["X-Client-Version"] = (self.config.payment.checkbox_client_version or "1.0").strip()
         return headers
 
     def _is_shift_not_opened(self, payload: Optional[dict], error_code: Optional[str], error_text: Optional[str]) -> bool:
@@ -73,35 +75,7 @@ class CheckboxClient:
         return False
 
     def _open_shift_payload(self) -> dict:
-        raw = (self.config.payment.checkbox_open_shift_payload or '{}').strip()
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                # CreateShiftPayload allowed fields.
-                allowed = {"id", "auto_close_at", "fiscal_code", "fiscal_date"}
-                payload = {k: v for k, v in parsed.items() if k in allowed and v is not None}
-
-                if "auto_close_at" not in payload:
-                    payload["auto_close_at"] = self._default_auto_close_at_iso()
-
-                if "id" not in payload:
-                    payload["id"] = str(uuid4())
-
-                if "fiscal_code" not in payload:
-                    payload["fiscal_code"] = self._default_fiscal_code()
-
-                if "fiscal_date" not in payload:
-                    payload["fiscal_date"] = self._utc_now_iso()
-
-                return payload
-        except Exception:
-            pass
-        return {
-            "id": str(uuid4()),
-            "auto_close_at": self._default_auto_close_at_iso(),
-            "fiscal_code": self._default_fiscal_code(),
-            "fiscal_date": self._utc_now_iso(),
-        }
+        return {"id": str(uuid4())}
 
     def _close_shift_payload(self) -> dict:
         raw = (self.config.payment.checkbox_close_shift_payload or '{}').strip()
@@ -177,26 +151,6 @@ class CheckboxClient:
                 async with session.post(url, headers=self._headers(include_license_key=True), json=payload) as response:
                     data = await response.json(content_type=None)
                     if response.status >= 400:
-                        if self._is_offline_required_error(
-                            data,
-                            data.get("code") if isinstance(data, dict) else None,
-                            str(data),
-                        ):
-                            logging.warning("Checkbox open shift requires offline mode, trying go-offline")
-                            switched = await self.go_offline()
-                            if switched:
-                                retry_payload = self._open_shift_payload()
-                                async with session.post(
-                                    url,
-                                    headers=self._headers(include_license_key=True),
-                                    json=retry_payload,
-                                ) as retry_response:
-                                    retry_data = await retry_response.json(content_type=None)
-                                    if retry_response.status < 400:
-                                        logging.info("Checkbox shift opened successfully after go-offline")
-                                        return True
-                                    logging.warning("Checkbox open shift failed after go-offline: %s", retry_data)
-
                         logging.warning("Checkbox open shift failed: %s", data)
                         return False
                     logging.info("Checkbox shift opened successfully")

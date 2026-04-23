@@ -1,4 +1,5 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
@@ -157,7 +158,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
             return
 
         data = await state.get_data()
-        create_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+        create_date = datetime.now(ZoneInfo('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
 
         db.add_new_user(
             tg_id=callback.from_user.id,

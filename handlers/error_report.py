@@ -1,4 +1,5 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
@@ -101,8 +102,8 @@ async def confirm_problem(call: CallbackQuery, state: FSMContext):
         else:
             current_rent_text = 'Аренда відсутня'
 
-        now = datetime.now()
-        create_date = now.strftime("%d.%m.%Y %H:%M")
+        now = datetime.now(ZoneInfo('Europe/Kyiv'))
+        create_date = now.strftime("%Y-%m-%d %H:%M")
 
         db.create_problem_report(user[1], user[2], user[4], current_rent_text, data.get('file_type'), data.get('file_id'), data.get('description'), 'Новий', create_date)
 

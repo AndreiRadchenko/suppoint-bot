@@ -51,6 +51,8 @@ class PaymentConfig:
     checkbox_shift_fiscal_code_prefix: str
     checkbox_request_timeout_sec: int
     checkbox_receipt_url_template: str
+    checkbox_client_name: str
+    checkbox_client_version: str
     fiscal_retry_interval_sec: int
     fiscal_retry_window_min: int
 
@@ -110,6 +112,8 @@ def load_config(path: str | None = None) -> Config:
             checkbox_shift_fiscal_code_prefix=env.str('CHECKBOX_SHIFT_FISCAL_CODE_PREFIX', default='AUTO'),
             checkbox_request_timeout_sec=env.int('CHECKBOX_REQUEST_TIMEOUT_SEC', default=20),
             checkbox_receipt_url_template=env.str('CHECKBOX_RECEIPT_URL_TEMPLATE', default='https://check.checkbox.ua/{receipt_id}/html'),
+            checkbox_client_name=env.str('CHECKBOX_CLIENT_NAME', default='SuppointBot'),
+            checkbox_client_version=env.str('CHECKBOX_CLIENT_VERSION', default='1.0'),
             fiscal_retry_interval_sec=env.int('FISCAL_RETRY_INTERVAL_SEC', default=60),
             fiscal_retry_window_min=env.int('FISCAL_RETRY_WINDOW_MIN', default=15),
         ),

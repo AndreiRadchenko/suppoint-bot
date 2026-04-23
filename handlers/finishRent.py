@@ -319,7 +319,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                     else:
                         topup_destination = f"Доплата за оренду #{rent_id}. Станція: {station_name}"
 
-                    price_url = await payment_service.create_topup_invoice(
+                    price_url, topup_invoice_id = await payment_service.create_topup_invoice(
                         rent_id=rent_id,
                         tg_id=rent[1],
                         amount_grn=fin_pay,
@@ -333,12 +333,13 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                         [btn1],
                     ])
 
-                    await callback.message.answer('💰Доплата:\n'
+                    sent = await callback.message.answer('💰Доплата:\n'
                                                   f'Мабуть, ваша прогулянка була надто крута 😎 Трохи перевищили оренду, тож просимо доплатити {fin_pay} грн 🪙\n'
                                                   f'⏱️ Загальна тривалість оренди склала {total_time} хв.\n'
                                                   '⚡️ Після оплати підтвердження відбудеться автоматично.\n'
                                                   '🙌 Дякуємо, що обираєте нас та чекаємо знову!'
                                                   , reply_markup=pay_menu)
+                    db.save_link_message_id(topup_invoice_id, sent.message_id)
 
                     db.rent_update_status_and_timer('Очікує доплату', 0, rent[0])
                     db.add_total_time(total_time, rent[0])

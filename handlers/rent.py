@@ -6,6 +6,7 @@ from config_data.config import Config, load_config
 from helper.helper import log_exception, clear_messages
 from kb import kb
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from create_bot import bot
 from db import Database
 import base64
@@ -280,8 +281,8 @@ async def done_selecting_cells(callback: CallbackQuery, state: FSMContext):
                 await show_locker_selection(callback.message, state, station_id)
                 return
 
-        now = datetime.now()
-        create_date = now.strftime("%d.%m.%Y %H:%M")
+        now = datetime.now(ZoneInfo('Europe/Kyiv'))
+        create_date = now.strftime("%Y-%m-%d %H:%M")
         for locker_id in selected:
             # Створюємо оренду зі статусом і таймером
             # Таймер задається виходячи з інтервала 15сек (1хв = 4, 60хв = 240)
@@ -427,7 +428,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                 destination = f"Оренда спорядження. Станція: {station_name} ({station_location}). Тривалість {time} хв"
             else:
                 destination = f"Оренда спорядження. Станція: {station_name}. Тривалість {time} хв"
-            price_url = await payment_service.create_initial_invoice(
+            price_url, invoice_id = await payment_service.create_initial_invoice(
                 tg_id=callback.from_user.id,
                 station_id=station_id,
                 locker_ids=selected,
@@ -442,7 +443,8 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                 [btn2]
             ])
 
-            await callback.message.answer(price_text, reply_markup=pay_menu)
+            sent = await callback.message.answer(price_text, reply_markup=pay_menu)
+            db.save_link_message_id(invoice_id, sent.message_id)
             await state.clear()
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:

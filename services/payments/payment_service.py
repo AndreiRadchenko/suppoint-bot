@@ -15,6 +15,7 @@ from ecdsa.util import sigdecode_der
 from config_data.config import Config, load_config
 from create_bot import bot
 from db import Database
+from kb import kb
 from .checkbox_client import CheckboxClient, FiscalResult
 from .monobank_client import MonobankClient
 
@@ -86,7 +87,7 @@ class PaymentService:
         locker_ids: list[int],
         amount_grn: float,
         destination: str,
-    ) -> str:
+    ) -> tuple[str, str]:
         self._validate_station_lockers(station_id, locker_ids)
         amount_minor = int(amount_grn * 100)
         reference = f"rent-{tg_id}-{int(datetime.utcnow().timestamp())}"
@@ -126,7 +127,7 @@ class PaymentService:
             invoice_url=result.get("pageUrl"),
         )
 
-        return result["pageUrl"]
+        return result["pageUrl"], result["invoiceId"]
 
     def _validate_station_lockers(self, station_id: int, locker_ids: list[int]) -> None:
         if not locker_ids:
@@ -149,7 +150,7 @@ class PaymentService:
                     f"locker_id {locker_id} belongs to station {locker[1]}, expected {station_id}"
                 )
 
-    async def create_topup_invoice(self, rent_id: int, tg_id: int, amount_grn: float, destination: str) -> str:
+    async def create_topup_invoice(self, rent_id: int, tg_id: int, amount_grn: float, destination: str) -> tuple[str, str]:
         amount_minor = int(amount_grn * 100)
         reference = f"topup-{rent_id}-{int(datetime.utcnow().timestamp())}"
         webhook_url = self._webhook_public_url()
@@ -183,7 +184,7 @@ class PaymentService:
             invoice_url=result.get("pageUrl"),
         )
 
-        return result["pageUrl"]
+        return result["pageUrl"], result["invoiceId"]
 
     def _webhook_public_url(self) -> Optional[str]:
         public_base = (self.config.payment.mono_webhook_public_base or '').strip().rstrip('/')
@@ -258,6 +259,11 @@ class PaymentService:
         surcharge_id = tx[4]
         station_id = tx[5]
         locker_ids_raw = tx[6] or ""
+        link_message_id = tx[24] if len(tx) > 24 else None
+
+        if link_message_id:
+            with suppress(Exception):
+                await bot.delete_message(tg_id, link_message_id)
 
         if payment_type == "initial":
             locker_ids = [int(item) for item in locker_ids_raw.split(",") if item]
@@ -268,14 +274,16 @@ class PaymentService:
                 self.db.rent_update_pay_1_status(rent[0])
                 self.db.save_rent_payment_receipt(rent[0], invoice_id, receipt_url)
 
+            await self._start_fiscalization(tx, invoice_id)
             await bot.send_message(
                 tg_id,
                 "✅ Оплату підтверджено автоматично.\n\n"
                 "🚪 Доступ до комірки відкрито.\n"
                 "Перейдіть у розділ 🛶 Мої оренди та натисніть 🔓 Відкрити комірку.",
+                reply_markup=kb.user_menu,
             )
-            asyncio.create_task(self._start_fiscalization(tx, invoice_id))
-            return
+            # asyncio.create_task(self._start_fiscalization(tx, invoice_id))
+            # return
 
         if payment_type == "topup" and rent_id:
             self.db.rent_update_pay_2_status(rent_id)
@@ -284,11 +292,13 @@ class PaymentService:
                 self.db.surcharge_update_status("Враховано", surcharge_id, str(rent_id))
                 self.db.save_surcharge_payment_receipt(surcharge_id, invoice_id, receipt_url)
 
+            await self._start_fiscalization(tx, invoice_id)
             await bot.send_message(
                 tg_id,
                 "✅ Доплату підтверджено автоматично. Дякуємо, оренду завершено.",
+                reply_markup=kb.user_menu,
             )
-            asyncio.create_task(self._start_fiscalization(tx, invoice_id))
+            # asyncio.create_task(self._start_fiscalization(tx, invoice_id))
 
     def _resolve_station_location_for_tx(self, tx) -> str:
         station_id = tx[5]
@@ -305,19 +315,56 @@ class PaymentService:
             return f"Станція #{station_id}"
         return station[2] or f"Станція #{station_id}"
 
+    def _resolve_station_info_for_tx(self, tx) -> tuple[str, str]:
+        """Returns (name, location) for the station linked to tx."""
+        station_id = tx[5]
+        if not station_id and tx[3]:
+            rent = self.db.get_rent_by_id(tx[3])
+            if rent:
+                station_id = rent[2]
+
+        if not station_id:
+            return ("Невідома станція", "")
+
+        station = self.db.get_station_by_id(station_id)
+        if not station:
+            return (f"Станція #{station_id}", "")
+        return (station[1] or f"Станція #{station_id}", station[2] or "")
+
     def _build_checkbox_sale_payload(self, tx, invoice_id: str) -> dict:
         payment_type = tx[1]
         amount_minor = int(tx[7] or 0)
         reference = tx[9] or invoice_id
-        location = self._resolve_station_location_for_tx(tx)
 
-        item_name = "Оренда SUP"
-        item_code = "SUP_RENTAL"
+        station_name, station_location = self._resolve_station_info_for_tx(tx)
+        station_label = f"{station_name} ({station_location})" if station_location else station_name
+
+        rent = self.db.get_rent_by_id(tx[3]) if tx[3] else None
+
         if payment_type == "topup":
-            item_name = "Доплата за оренду SUP"
+            duration_str = ""
+            if rent:
+                try:
+                    base_time = int(rent[4]) if rent[4] is not None else 0
+                    total_time = int(rent[14]) if rent[14] is not None else 0
+                    overtime = total_time - base_time
+                    if overtime > 0:
+                        duration_str = f". Додатковий час {overtime} хв"
+                except (TypeError, ValueError):
+                    pass
+            item_name = f"Доплата за оренду спорядження. Станція: {station_label}{duration_str}"
             item_code = "SUP_TOPUP"
-
-        item_name = f"{item_name} ({location})"
+        else:
+            duration_str = ""
+            if rent:
+                try:
+                    base_time = int(rent[4])
+                    if base_time > 0:
+                        duration_str = f". Тривалість {base_time} хв"
+                except (TypeError, ValueError):
+                    pass
+            item_name = f"Оренда спорядження. Станція: {station_label}{duration_str}"
+            item_code = "SUP_RENTAL"
 
         return {
             # Checkbox ReceiptSellPayload requires goods[].good object.
