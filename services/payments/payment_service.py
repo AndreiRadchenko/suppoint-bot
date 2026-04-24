@@ -366,6 +366,23 @@ class PaymentService:
             item_name = f"Оренда спорядження. Станція: {station_label}{duration_str}"
             item_code = "SUP_RENTAL"
 
+        # Determine quantity from locker_ids for initial payments.
+        locker_count = 1
+        if payment_type == "initial":
+            locker_ids_raw = tx[6] or ""
+            ids = [x for x in locker_ids_raw.split(",") if x]
+            if len(ids) > 1:
+                locker_count = len(ids)
+
+        # Use n × unit_price only when it divides evenly — Checkbox requires
+        # goods total (price * quantity / 1000) to exactly match payments.value.
+        if locker_count > 1 and amount_minor % locker_count == 0:
+            unit_price = amount_minor // locker_count
+            goods_quantity = locker_count * 1000
+        else:
+            unit_price = amount_minor
+            goods_quantity = 1000
+
         return {
             # Checkbox ReceiptSellPayload requires goods[].good object.
             "id": str(uuid4()),
@@ -374,10 +391,10 @@ class PaymentService:
                     "good": {
                         "code": item_code,
                         "name": item_name,
-                        "price": amount_minor,
+                        "price": unit_price,
                     },
-                    # 1000 means one item in Checkbox quantity scale.
-                    "quantity": 1000,
+                    # 1000 = 1 unit in Checkbox quantity scale.
+                    "quantity": goods_quantity,
                 }
             ],
             "payments": [

@@ -53,7 +53,7 @@ async def start(message: Message):
                                    'Як орендувати сапборд?\n\n'
                                    '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
                                    '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                   '🚪 Початок оренди — після оплати відкрийте комірку (або автостарт оренди через 5 хв).\n\n'
+                                   '🚪 Початок оренди — після оплати відкрийте комірку в меню "Мої оренди" (або автостарт оренди через 5 хв).\n\n'
                                    '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
                                    '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
                                    '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
@@ -707,7 +707,7 @@ async def back_to_main_menu(callback: CallbackQuery):
                                    'Як орендувати сапборд?\n\n'
                                    '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
                                    '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                   '🚪 Початок оренди — після оплати відкрийте комірку (або автостарт оренди через 5 хв).\n\n'
+                                   '🚪 Початок оренди — після оплати відкрийте комірку в меню "Мої оренди" (або автостарт оренди через 5 хв).\n\n'
                                    '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
                                    '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
                                    '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
@@ -1239,6 +1239,9 @@ async def about_actual_rent(call: CallbackQuery):
 
         _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
         buttons = []
+        if rent[8] == 'NOT':
+            sc_id = per_limit[0] if per_limit else 0
+            buttons.append([InlineKeyboardButton(text='🚫 Скасувати доплату', callback_data=f'adm_cancel_surcharge:{sc_id}:{rent[0]}')])
         if rent[12] in _active_statuses:
             buttons.append([InlineKeyboardButton(text='🔴 Примусово завершити', callback_data=f'adm_force_close_rent:{rent[0]}')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'active_rents')])
@@ -1363,6 +1366,11 @@ async def adm_force_close_rent(call: CallbackQuery):
         db.rent_update_status_and_timer('Завершено адміністратором', 0, rent[0])
         db.locker_status('Доступна оренда', rent[3])
 
+        # Auto-cancel any unpaid surcharge for this rent.
+        per_limit = db.get_surcharge_by_rent(rent[0])
+        if per_limit and per_limit[4] == 'Очікує оплату':
+            db.cancel_surcharge(per_limit[0])
+
         await bot.send_message(
             rent[1],
             f"✅ Вашу оренду №{rent[0]} завершено адміністратором.",
@@ -1372,6 +1380,45 @@ async def adm_force_close_rent(call: CallbackQuery):
             f"✅ Оренду №{rent[0]} завершено примусово.\n"
             f"Загальний час: {total_time} хв.\n"
             f"Комірку звільнено.",
+            reply_markup=kb.admin_menu,
+        )
+    except Exception as e:
+        log_exception(e)
+
+@router.callback_query(F.data.startswith('adm_cancel_surcharge:'))
+async def adm_cancel_surcharge(call: CallbackQuery):
+    try:
+        await bot.answer_callback_query(call.id)
+        _, surcharge_id, rent_id = call.data.split(":")
+        rent = db.get_rent_by_id(rent_id)
+        if not rent:
+            await call.message.answer("⚠️ Оренду не знайдено.")
+            return
+
+        # Cancel surcharge record if one was passed.
+        if surcharge_id != '0':
+            db.cancel_surcharge(surcharge_id)
+
+        # Always mark pay_2 as settled.
+        db.rent_update_pay_2_status(rent_id)
+
+        # Close rent and free locker only if still active.
+        _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
+        if rent[12] in _active_statuses:
+            db.rent_update_status_and_timer('Завершено адміністратором', 0, rent_id)
+            db.locker_status('Доступна оренда', rent[3])
+            admin_note = "Оренду завершено. Комірку звільнено."
+        else:
+            admin_note = "Оренда вже завершена."
+
+        await bot.send_message(
+            rent[1],
+            f"✅ Доплату за вашу оренду №{rent_id} скасовано адміністратором.\n"
+            f"Борг погашено автоматично.",
+            reply_markup=kb.user_menu,
+        )
+        await call.message.answer(
+            f"✅ Доплату за оренду №{rent_id} скасовано. {admin_note}",
             reply_markup=kb.admin_menu,
         )
     except Exception as e:
@@ -1417,6 +1464,9 @@ async def about_actual_rent(call: CallbackQuery):
             rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
 
         buttons = []
+        if rent[8] == 'NOT':
+            sc_id = per_limit[0] if per_limit else 0
+            buttons.append([InlineKeyboardButton(text='🚫 Скасувати доплату', callback_data=f'adm_cancel_surcharge:{sc_id}:{rent[0]}')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_rent')])
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 

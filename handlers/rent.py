@@ -224,7 +224,31 @@ async def choose_station(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(station_id=station_id, selected_lockers=[])
 
+        # --- ПЕРЕВІРКА НЕСПЛАЧЕНИХ ДОПЛАТ ---
+        tg_id = callback.from_user.id
+        unpaid = db.get_unpaid_surcharges_by_user(tg_id)
+        if unpaid:
+            lines = []
+            for sc in unpaid:
+                tx = db.get_topup_tx_by_surcharge_id(sc[0])
+                if tx and tx[11]:
+                    lines.append(f"• Оренда #{sc[6]}: <a href='{tx[11]}'>Оплатити доплату</a>")
+                else:
+                    lines.append(f"• Оренда #{sc[6]}: очікує обробки адміністратором")
+            links_text = "\n".join(lines)
+            await callback.message.answer(
+                f"🚫 <b>Нова оренда заблокована</b>\n\n"
+                f"У вас є несплачені доплати за попередні оренди. "
+                f"Будь ласка, сплатіть борг, щоб розпочати нову оренду.\n\n"
+                f"{links_text}",
+                reply_markup=kb.user_menu,
+            )
+            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+            await state.clear()
+            return
+
         await show_locker_selection(callback.message, state, station_id)
+        # await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
 

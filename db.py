@@ -97,6 +97,12 @@ class Database:
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
                     if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
+                    if not self._column_exists(cursor, 'surcharge', 'reminder_1h_sent'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN reminder_1h_sent INTEGER DEFAULT 0")
+                    if not self._column_exists(cursor, 'surcharge', 'reminder_3h_sent'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN reminder_3h_sent INTEGER DEFAULT 0")
+                    if not self._column_exists(cursor, 'surcharge', 'last_daily_reminder_date'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN last_daily_reminder_date TEXT")
 
                 if self._table_exists(cursor, 'payment_transactions'):
                     if not self._column_exists(cursor, 'payment_transactions', 'invoice_url'):
@@ -1002,7 +1008,90 @@ class Database:
                 result = cursor.execute("SELECT * FROM surcharge WHERE to_rent = ?", (rent_id,)).fetchone()
             return result
         except sqlite3.Error as e:
-            print("Помилка в get_all_active_stations:", e)
+            print("Помилка в get_surcharge_by_rent:", e)
+
+    def get_unpaid_surcharges_by_user(self, tg_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM surcharge WHERE tg_id = ? AND status = 'Очікує оплату'",
+                    (tg_id,)
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_unpaid_surcharges_by_user:", e)
+            return []
+
+    def get_all_unpaid_surcharges(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM surcharge WHERE status = 'Очікує оплату'"
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_all_unpaid_surcharges:", e)
+            return []
+
+    def get_topup_tx_by_surcharge_id(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM payment_transactions WHERE surcharge_id = ? AND payment_type = 'topup' ORDER BY id DESC LIMIT 1",
+                    (surcharge_id,)
+                ).fetchone()
+        except sqlite3.Error as e:
+            print("Помилка get_topup_tx_by_surcharge_id:", e)
+            return None
+
+    def cancel_surcharge(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET status = 'Скасовано' WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка cancel_surcharge:", e)
+
+    def mark_reminder_1h(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET reminder_1h_sent = 1 WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_reminder_1h:", e)
+
+    def mark_reminder_3h(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET reminder_3h_sent = 1 WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_reminder_3h:", e)
+
+    def mark_daily_reminder(self, surcharge_id, date_str):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET last_daily_reminder_date = ? WHERE id = ?",
+                    (date_str, surcharge_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_daily_reminder:", e)
 
     def export_all_rent_to_excel(self, excel_path):
         try:
