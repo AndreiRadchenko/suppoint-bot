@@ -8,6 +8,10 @@ from helper.helper import log_exception, get_entity_state
 from config_data.config import Config, load_config
 import aiohttp
 from kb import kb
+from text.text import (
+    MSG_RESERVATION_CANCELLED, MSG_RENT_STARTED,
+    MSG_RENT_5_MIN_LEFT, MSG_RENT_TIME_EXPIRED,
+)
 
 config: Config = load_config()
 db = Database(config.db.path)
@@ -21,39 +25,37 @@ async def timer():
                 try:
                     if rent[12] == 'Резервація':
                         if rent[13] == 0:
-                            await bot.send_message(rent[1], 'Ваш резерв знято')
+                            await bot.send_message(rent[1], MSG_RESERVATION_CANCELLED)
                             db.cancel_rent('Очікування вичерпане', rent[0])
                             db.locker_status('Доступна оренда', rent[3])
                         else:
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Очікує оплату':
                         if rent[13] == 0:
-                            await bot.send_message(rent[1], 'Ваш резерв знято')
+                            await bot.send_message(rent[1], MSG_RESERVATION_CANCELLED)
                             db.cancel_rent('Очікування вичерпане', rent[0])
                             db.locker_status('Доступна оренда', rent[3])
                         else:
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Повторний запит':
                         if rent[13] == 1:
-                            await bot.send_message(rent[1], 'Ваш резерв знято')
+                            await bot.send_message(rent[1], MSG_RESERVATION_CANCELLED)
                             db.cancel_rent('Очікування вичерпане', rent[0])
                             db.locker_status('Доступна оренда', rent[3])
                         else:
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Очікування відкриття':
                         if rent[13] == 1:
-                            await bot.send_message(rent[1], 'Розпочато оренду')
+                            await bot.send_message(rent[1], MSG_RENT_STARTED)
                             db.rent_update_status_and_timer('Оренда', int(rent[4])*4, rent[0])
                         else:
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Оренда':
                         if rent[13] == 20:
-                            await bot.send_message(rent[1], '⏳ До кінця оренди залишилось 5 хв')
+                            await bot.send_message(rent[1], MSG_RENT_5_MIN_LEFT)
                             db.valid_until_down(rent[0])
                         elif rent[13] == 1:
-                            await bot.send_message(rent[1], '🕒 Час оренди минув\n'
-                                                            'Будь ласка, поверніть спорядження до комірки або продовжіть оренду.\n'
-                                                            '💳 Автоматично буде нарахована доплата згідно з чинним тарифом\n',
+                            await bot.send_message(rent[1], MSG_RENT_TIME_EXPIRED,
                        reply_markup=kb.user_menu)
                             db.valid_until_down(rent[0])
                         else:

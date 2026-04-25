@@ -13,6 +13,7 @@ from ecdsa import BadSignatureError, VerifyingKey
 from ecdsa.util import sigdecode_der
 
 from config_data.config import Config, load_config
+from text.text import MSG_PAYMENT_FAILED, MSG_PAYMENT_CONFIRMED, MSG_TOPUP_CONFIRMED
 from create_bot import bot
 from db import Database
 from kb import kb
@@ -249,7 +250,7 @@ class PaymentService:
         if normalized_status in {"failed", "expired"}:
             await bot.send_message(
                 tx[2],
-                "Оплата не завершена. Спробуйте оплатити ще раз у меню оренди.",
+                MSG_PAYMENT_FAILED,
             )
 
     async def _mark_paid(self, tx, invoice_id: str, receipt_url: Optional[str]):
@@ -277,9 +278,7 @@ class PaymentService:
             await self._start_fiscalization(tx, invoice_id)
             await bot.send_message(
                 tg_id,
-                "✅ Оплату підтверджено автоматично.\n\n"
-                "🚪 Доступ до комірки відкрито.\n"
-                "Перейдіть у розділ 🛶 Мої оренди та натисніть 🔓 Відкрити комірку.",
+                MSG_PAYMENT_CONFIRMED,
                 reply_markup=kb.user_menu,
             )
             # asyncio.create_task(self._start_fiscalization(tx, invoice_id))
@@ -295,7 +294,7 @@ class PaymentService:
             await self._start_fiscalization(tx, invoice_id)
             await bot.send_message(
                 tg_id,
-                "✅ Доплату підтверджено автоматично. Дякуємо, оренду завершено.",
+                MSG_TOPUP_CONFIRMED,
                 reply_markup=kb.user_menu,
             )
             # asyncio.create_task(self._start_fiscalization(tx, invoice_id))

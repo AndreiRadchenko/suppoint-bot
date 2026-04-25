@@ -3,7 +3,7 @@ from contextlib import suppress
 from datetime import datetime
 
 from aiogram import Router, F, types
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
 from aiogram.utils.media_group import MediaGroupBuilder
@@ -13,6 +13,7 @@ from db import Database
 from create_bot import bot
 from helper.helper import clear_messages, log_exception, get_entity_state
 from kb import kb
+from text.text import MSG_USER_WELCOME
 from config_data.config import Config, load_config
 from services.payments import PaymentService
 
@@ -97,14 +98,7 @@ def generate_bank_qr_url(
 async def start_rent(callback: CallbackQuery, state: FSMContext):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer('Як орендувати сапборд?\n\n'
-                                      '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
-                                      '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                      '🚪 Початок оренди — після оплати відкрийте комірку в меню "Мої оренди" (або автостарт оренди через 5 хв).\n\n'
-                                      '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
-                                      '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
-                                      '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
-                                      reply_markup=kb.user_menu)
+        await callback.message.answer(MSG_USER_WELCOME, reply_markup=kb.user_menu)
 
         await state.clear()
 
@@ -120,11 +114,6 @@ async def start_rent_finish(callback: CallbackQuery, state: FSMContext):
         await bot.answer_callback_query(callback.id)
         rent_id = callback.data.split(":")[-1]
         await state.update_data(rent_id=rent_id)
-
-        btn1 = InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")
-        back_menu = InlineKeyboardMarkup(inline_keyboard=[
-            [btn1],
-        ])
 
         rent = db.get_rent_by_id(rent_id)
         locker_id = rent[3]
@@ -146,7 +135,7 @@ async def start_rent_finish(callback: CallbackQuery, state: FSMContext):
                    f'📸 <strong>Надішліть фото комплекту {inventory_kit[1]} в Комірка {current_locker[2]} ({station_label})</strong>'
         photo_kit = FSInputFile("media/kit.jpg")
 
-        await bot.send_photo(callback.from_user.id, photo=photo_kit, caption=fin_text, reply_markup=back_menu)
+        await bot.send_photo(callback.from_user.id, photo=photo_kit, caption=fin_text, reply_markup=kb.finish_rent_cancel_menu)
         await state.set_state(RentFinishFSM.waiting_for_photo)
         await callback.answer()
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
@@ -199,12 +188,7 @@ async def photo_received(message: Message, state: FSMContext):
 
         await state.update_data(file_type=file_type, file_id=file_id)
 
-        confirm_btn = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🔒 Кінець оренди", callback_data="confirm_rent_finish")],
-                [InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")],
-            ]
-        )
+        confirm_btn = kb.rent_finish_confirm_menu
         await message.answer(
             "✅ Фото збережено!\n\nТепер закрийте дверцята комірки та натисніть кнопку нижче:",
             reply_markup=confirm_btn
@@ -239,12 +223,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
         sensor_status = await get_entity_state(sensor, ha_url, ha_token)
         print('sensor_status', sensor_status)
         if sensor_status is None:
-            confirm_btn = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔁 Спробувати ще раз", callback_data="confirm_rent_finish")],
-                    [InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")],
-                ]
-            )
+            confirm_btn = kb.rent_finish_confirm_menu
             await callback.message.answer(
                 "⚠️ Не вдалося зв'язатися зі станцією, вона зараз недоступна. "
                 "Спробуйте ще раз за хвилину або скасуйте завершення оренди.",
@@ -328,10 +307,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
 
                     db.rent_update_surcharge(fin_pay, rent_id)
 
-                    btn1 = InlineKeyboardButton(text="💳 Перейти до оплат", url=price_url)
-                    pay_menu = InlineKeyboardMarkup(inline_keyboard=[
-                        [btn1],
-                    ])
+                    pay_menu = kb.topup_pay_menu(price_url)
 
                     sent = await callback.message.answer('💰Доплата:\n'
                                                   f'Мабуть, ваша прогулянка була надто крута 😎 Трохи перевищили оренду, тож просимо доплатити {fin_pay} грн 🪙\n'
@@ -349,12 +325,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
         else:
             print('Ой не закрито')
             station_label = _station_label(current_locker[1])
-            confirm_btn = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text="🔒 Кінець оренди", callback_data="confirm_rent_finish")],
-                    [InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")],
-                ]
-            )
+            confirm_btn = kb.rent_finish_confirm_menu
             await callback.message.answer(
                 f"Комірка {current_locker[2]} ({station_label}) не закрита. Закрийте та натисніть 🔒 Кінець оренди ще аз:",
                 reply_markup=confirm_btn
