@@ -2,11 +2,30 @@ import asyncio
 import requests
 from aiogram.fsm.state import default_state
 from create_bot import bot
+from text.text import (
+    MSG_ADMIN_WELCOME, MSG_REGISTER_PROMPT, MSG_USER_WELCOME,
+    MSG_RENT_STARTED, MSG_MY_RENTS,
+    MSG_SERVICES_INFO, MSG_PRE_REG_INFO, MSG_PRE_REG_PRICE,
+    MSG_AUTO_PAYMENT_NOTE, MSG_NO_OPEN_PROBLEMS, MSG_NO_NEW_SURCHARGES,
+    MSG_MANUAL_REJECT_DISABLED, MSG_MANUAL_RESEND_DISABLED, MSG_MANUAL_CONFIRM_DISABLED,
+    MSG_NO_ACTIVE_RENTS, MSG_NO_RENTS, MSG_HISTORY_EMPTY,
+    MSG_CHOOSE_DATE, MSG_CHOOSE_RENT, MSG_ACTIVE_RENTS_TITLE, MSG_NO_ACTIVE_RENTS_ADM,
+    MSG_CHOOSE_STATION, MSG_NO_ACTIVE_STATIONS,
+    MSG_CHOOSE_STATION_ADM, MSG_NO_ACTIVE_STATIONS_ADM,
+    MSG_NO_LOCKER_INFO, MSG_LOCKER_OPENED, MSG_RENT_NOT_ACTIVE,
+    MSG_STATIONS_NOT_FOUND, MSG_STATION_MANAGEMENT,
+    MSG_PAYMENT_REVIEW_WAIT, MSG_PAYMENT_UPDATED_ADM,
+    MSG_PHOTO_NOT_NEEDED, MSG_COMMAND_DISABLED,
+    MSG_NO_LINKED_RENTS, MSG_LOCKER_NOT_FOUND, MSG_CHOOSE_ACTION,
+    MSG_ALL_RENTS_CLOSED, MSG_NO_LINKED_RENTS_F, MSG_RENTS_TITLE,
+    MSG_RENT_NOT_FOUND, MSG_STATION_ACTIVITY_FAIL, MSG_THANKS,
+    MSG_STATUS_AVAILABLE, MSG_STATUS_MAINTENANCE,
+)
 from collections import defaultdict
 from aiogram import Router, F
 from config_data.config import Config, load_config
 from kb import kb
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton
 from helper.helper import clear_messages, log_exception, get_entity_state
 import logging
 from aiogram.types import Message, CallbackQuery
@@ -16,8 +35,6 @@ from aiogram import Bot
 from aiogram.types import BotCommand
 from datetime import datetime
 from math import ceil
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram import F
 from aiogram.types.input_file import FSInputFile
 
 config: Config = load_config()
@@ -41,25 +58,28 @@ def _station_label(station_id: int) -> str:
         return station_location
     return f"Станція #{station_id}"
 
+
+def _my_rent_items(tg_id: int) -> list:
+    """Return [(rent_id, locker_name, station_label)] for all active rents of tg_id."""
+    rents = db.get_all_my_rent(tg_id)
+    items = []
+    for rent in rents:
+        my_locker = db.get_locker_by_locker_id(rent[3])
+        if my_locker:
+            items.append((rent[0], my_locker[2], _station_label(my_locker[1])))
+    return items
+
 @router.message(Command("start"))
 async def start(message: Message):
     try:
         tg_id = message.from_user.id
         user_exist = db.user_exists(tg_id)
         if tg_id in config.tg_bot.admin_ids:
-            await bot.send_message(tg_id, 'Вітаємо адміне:', reply_markup=kb.admin_menu)
+            await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
         elif user_exist:
-            await bot.send_message(tg_id,
-                                   'Як орендувати сапборд?\n\n'
-                                   '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
-                                   '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                   '🚪 Початок оренди — після оплати відкрийте комірку (або автостарт оренди через 5 хв).\n\n'
-                                   '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
-                                   '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
-                                   '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
-                                   reply_markup=kb.user_menu)
+            await bot.send_message(tg_id, MSG_USER_WELCOME, reply_markup=kb.user_menu)
         else:
-            await bot.send_message(tg_id, 'Пройдіть реєстрацію:', reply_markup=kb.reg_menu)
+            await bot.send_message(tg_id, MSG_REGISTER_PROMPT, reply_markup=kb.reg_menu)
         await clear_messages(message.chat.id, message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -69,7 +89,7 @@ async def start(message: Message):
 async def about_rent_not_reg(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer('Інформація про послуги:', reply_markup=kb.pre_reg_info_menu)
+        await callback.message.answer(MSG_SERVICES_INFO, reply_markup=kb.pre_reg_info_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -79,21 +99,7 @@ async def about_rent_not_reg(callback: CallbackQuery):
 async def pre_reg_info(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        text = "ЗАГАЛЬНА ІНФОРМАЦІЯ\n\n" \
-               "<strong>Автоматизована оренда сапбордів</strong> — це зручний спосіб отримати спорядження <strong>самостійно</strong>, без прямої взаємодії з працівником 🧑‍💻. Вона працює через електронну систему обліку та завжди вимагає <strong>попереднього бронювання та оплати</strong>.\n\n" \
-               "<strong>Як це працює?</strong> 🚀\n\n" \
-               "• <strong>Бронювання:</strong> Ви оформлюєте попереднє бронювання САП-дошки через електронну форму у месенджері 📲.\n" \
-               "• <strong>Оплата:</strong> Обов'язкова 100% передоплата на розрахунковий рахунок <strong>IBAN</strong> 💸.\n" \
-               "• <strong>Інструкції:</strong> Ви отримуєте підтвердження бронювання, а також інструкції та доступ до спорядження 🔑.\n" \
-               "• <strong>Отримання:</strong> Самостійно забираєте САП-дошку з вказаного місця у погоджений час 📍.\n" \
-               "• <strong>Повернення:</strong> Залишаєте спорядження у спеціально визначеному місці, згідно з отриманими інструкціями ↩️ .\n\n" \
-               "<strong>Важливо пам'ятати!</strong> ⚠️\n\n" \
-               "• На автоматизовану оренду поширюються <strong><a href='https://docs.google.com/document/d/1vyYte4rpvlZtJrNVq5rr3dDBQnO22enD-nUCP2Sbypw/edit?tab=t.0#heading=h.uietqmbtvx4p'>УСІ умови Публічного Договору</a></strong> (оферти), включаючи правила безпеки та відповідальності .\n" \
-               "• <strong>Усі користувачі</strong> прокатного спорядження пункту прокату, незалежно від наявного досвіду та вміння, повинні дотримуватися Правил Безпеки 👨‍👩‍👧‍👦✅ .\n\n" \
-               "🦺 <strong>Завжди носіть рятувальний жилет. Суворо забороняється виходити на САП-дошках без страхувальних жилетів.</strong>\n\n" \
-               "👨‍👩‍👧‍👦 <strong>Діти тільки під наглядом.</strong> Діти віком до 16 років допускаються до плавання на САП-дошках <strong>тільки в супроводі дорослих осіб, які несуть за них повну відповідальність.</strong>\n\n" \
-               "🚫🍻 <strong>Без сп'яніння. Не допускаються до плавання особи в стані алкогольного або наркотичного сп'яніння.</strong> Розпивати спиртні напої та палити під час використання САП-дощок також заборонено."
-        await callback.message.answer(text, reply_markup=kb.pre_reg_info_menu, disable_web_page_preview=True)
+        await callback.message.answer(MSG_PRE_REG_INFO, reply_markup=kb.pre_reg_info_menu, disable_web_page_preview=True)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -103,11 +109,7 @@ async def pre_reg_info(callback: CallbackQuery):
 async def pre_reg_price(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        text = "ВАРТІСТЬ ПОСЛУГ\n\n" \
-               "Вартість оренди спортивного спорядження визначається згідно з <a href='https://drive.google.com/open?id=1-IUP7OdeZGyxACiC_Uvc0nLtO7oJTsiANHOX8QtV3rQ'>прейскурантом (прайс-листом)</a>, який розміщений у загальнодоступному місці на пункті прокату або опублікований на сайті http://www.suppoint.pp.ua .\n\n" \
-               "<strong>Розрахунок часу оренди:</strong> Час користування рахується з моменту видачі спорядження . Мінімальний крок становить <strong>15 хвилин</strong>, а округлення здійснюється в більшу сторону.\n\n" \
-               "<strong>Вихідний день:</strong> У державні вихідні та святкові дні, а також у п'ятницю після 16:00 діє тариф вихідного дня\n\n" \
-               "💰У випадку пошкодження або втрати спорядження, <strong>Орендар зобов’язується відшкодувати його вартість</strong> згідно з ринковою ціною."
+        text = MSG_PRE_REG_PRICE
         await callback.message.answer(text, reply_markup=kb.pre_reg_info_menu, disable_web_page_preview=True)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
@@ -118,7 +120,7 @@ async def pre_reg_price(callback: CallbackQuery):
 async def about_rent_reg(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer('Інформація про послуги:', reply_markup=kb.pre_reg_info_menu)
+        await callback.message.answer(MSG_SERVICES_INFO, reply_markup=kb.pre_reg_info_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -128,11 +130,7 @@ async def about_rent_reg(callback: CallbackQuery):
 async def check_pay(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer(
-            'Автоматичне підтвердження оплат активовано.\n\n'
-            'Ручна перевірка первинних оплат більше не використовується.',
-            reply_markup=kb.admin_menu,
-        )
+        await callback.message.answer(MSG_AUTO_PAYMENT_NOTE, reply_markup=kb.admin_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -151,12 +149,7 @@ async def check_problem(callback: CallbackQuery):
                        f'{problem[4]}\n' \
                        f'{problem[7]}'
 
-                btn1 = InlineKeyboardButton(text="✅ Вирішено", callback_data=f"fixit:{problem[0]}")
-                btn2 = InlineKeyboardButton(text="🌀 В процесі", callback_data="solution_in_process")
-                fix_menu = InlineKeyboardMarkup(inline_keyboard=[
-                    [btn1],
-                    [btn2]
-                ])
+                fix_menu = kb.problem_fix_keyboard(problem[0])
                 print(problem[5])
                 if problem[5] == 'document':
                     await bot.send_document(callback.from_user.id, problem[6], caption=text, reply_markup=fix_menu)
@@ -165,7 +158,7 @@ async def check_problem(callback: CallbackQuery):
                 else:
                     await bot.send_message(callback.from_user.id, text, reply_markup=fix_menu)
         else:
-            await callback.message.answer('Актуальних проблем не виявлено', reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_OPEN_PROBLEMS, reply_markup=kb.admin_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -183,15 +176,10 @@ async def check_surcharge(callback: CallbackQuery):
             for surcharge in new_surcharge:
                 text_perlimit = f'{surcharge[5]} | {surcharge[4]}\n'
                 all_perlimit_rent = db.all_perlimit_rent(surcharge[1])
-                buttons = []
-                for rent in all_perlimit_rent:
-                    rent_id = rent[0]
-                    rent_pay_2 = rent[7]
-                    text = f"✅ Доплата - {rent_pay_2}грн"
-                    callback_data = f"perlim:{rent_id}:{surcharge[0]}"
-                    buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
-                buttons.append([InlineKeyboardButton(text='🌀 Це спам(', callback_data=f'is_spam:{surcharge[0]}')])
-                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                keyboard = kb.surcharge_review_keyboard(
+                    [(rent[0], rent[7]) for rent in all_perlimit_rent],
+                    surcharge[0]
+                )
                 if surcharge[2] == "document":
                     await bot.send_document(callback.from_user.id, surcharge[3], caption=text_perlimit,
                                             parse_mode="Markdown", reply_markup=keyboard)
@@ -199,7 +187,7 @@ async def check_surcharge(callback: CallbackQuery):
                     await bot.send_photo(callback.from_user.id, surcharge[3], caption=text_perlimit,
                                          parse_mode="Markdown", reply_markup=keyboard)
         else:
-            await callback.message.answer('Актуальних доплат не виявлено', reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_NEW_SURCHARGES, reply_markup=kb.admin_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -231,7 +219,7 @@ async def check_pay(callback: CallbackQuery):
             await callback.message.answer(my_rent_history_text, reply_markup=kb.user_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
         else:
-            await callback.message.answer("Історія порожня", reply_markup=kb.user_menu)
+            await callback.message.answer(MSG_HISTORY_EMPTY, reply_markup=kb.user_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -241,7 +229,7 @@ async def check_pay(callback: CallbackQuery):
 async def rentNot(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        await call.message.answer('Ручне відхилення оплати вимкнено. Оплата підтверджується webhook Monobank.')
+        await call.message.answer(MSG_MANUAL_REJECT_DISABLED)
     except Exception as e:
         log_exception(e)
 
@@ -250,7 +238,7 @@ async def rentNot(call: CallbackQuery):
 async def reSend(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        await call.message.answer('Повторний запит фото вимкнено. Оплата підтверджується webhook Monobank.')
+        await call.message.answer(MSG_MANUAL_RESEND_DISABLED)
     except Exception as e:
         log_exception(e)
 
@@ -259,7 +247,7 @@ async def reSend(call: CallbackQuery):
 async def rentOk(call: CallbackQuery):
     try:
         await bot.answer_callback_query(call.id)
-        await call.message.answer('Ручне підтвердження оплати вимкнено. Підтвердження відбувається автоматично через Monobank webhook.')
+        await call.message.answer(MSG_MANUAL_CONFIRM_DISABLED)
     except Exception as e:
         log_exception(e)
 
@@ -280,46 +268,12 @@ async def my_rent(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
 
-        my_rent = db.get_all_my_rent(callback.from_user.id)
-        if len(my_rent) > 0:
-            buttons = []
-            for rent in my_rent:
-                locker_id = rent[3]
-                my_locker = db.get_locker_by_locker_id(locker_id)
-                if not my_locker:
-                    continue
-                station_label = _station_label(my_locker[1])
-                buttons.append([InlineKeyboardButton(
-                    text=f"🔓 Відкрити комірку {my_locker[2]} ({station_label})",
-                    callback_data=f"openLocker:{rent[0]}"
-                )])
-
-            for rent in my_rent:
-                locker_id = rent[3]
-                my_locker = db.get_locker_by_locker_id(locker_id)
-                if not my_locker:
-                    continue
-                station_label = _station_label(my_locker[1])
-                buttons.append([InlineKeyboardButton(
-                    text=f"✅ Завершити оренду комірки {my_locker[2]} ({station_label})",
-                    callback_data=f"finishRent:{rent[0]}"
-                )])
-
-            buttons.append([InlineKeyboardButton(
-                text=f"Назад",
-                callback_data="back_to_main_menu"
-            )])
-
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-
-            await bot.send_message(callback.from_user.id,
-                                   ' 🏄‍♂️Мої оренди — управління орендою: \n'
-                                   '🔓 Відкрийте комірку — отримайте доступ до спорядження\n'
-                                   '✅ Завершіть оренду — повернути спорядження \n'
-                                   '🛡️ Адміністрація не несе відповідальності за особисті речі, залишені в комірці.',
-                                   reply_markup=keyboard)
+        items = _my_rent_items(callback.from_user.id)
+        if items:
+            keyboard = kb.my_rent_keyboard(items)
+            await bot.send_message(callback.from_user.id, MSG_MY_RENTS, reply_markup=keyboard)
         else:
-            await callback.message.answer('Немає активних оренд', reply_markup=kb.user_menu)
+            await callback.message.answer(MSG_NO_ACTIVE_RENTS, reply_markup=kb.user_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -348,27 +302,18 @@ async def locker_status(callback: CallbackQuery):
                 callback_data="back_to_main_menu"
             )])
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            keyboard = kb.make_keyboard(buttons)
 
-            await bot.send_message(callback.from_user.id, 'Оберіть станцію', reply_markup=keyboard)
+            await bot.send_message(callback.from_user.id, MSG_CHOOSE_STATION, reply_markup=keyboard)
         else:
-            await callback.message.answer('Немає активних станцій', reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_ACTIVE_STATIONS, reply_markup=kb.admin_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
 
-def _station_manage_keyboard(station_id: int, is_active: bool, is_visible: bool) -> InlineKeyboardMarkup:
-    next_visibility = 0 if is_visible else 1
-    next_active = 0 if is_active else 1
-    vis_label = "🙈 Приховати для клієнтів" if is_visible else "👁 Показати для клієнтів"
-    active_label = "⏸ Деактивувати" if is_active else "✅ Активувати"
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=vis_label, callback_data=f"station_toggle_vis:{station_id}:{next_visibility}")],
-        [InlineKeyboardButton(text=active_label, callback_data=f"station_toggle_active:{station_id}:{next_active}")],
-        [InlineKeyboardButton(text="🔙 До станцій", callback_data="station_management")],
-    ])
+def _station_manage_keyboard(station_id: int, is_active: bool, is_visible: bool):
+    return kb.station_manage_keyboard(station_id, is_active, is_visible)
 
 
 @router.callback_query(F.data == "station_management")
@@ -377,7 +322,7 @@ async def station_management(callback: CallbackQuery):
         await bot.answer_callback_query(callback.id)
         stations = db.get_station_admin_list(include_inactive=True)
         if not stations:
-            await callback.message.answer("Станції не знайдено", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_STATIONS_NOT_FOUND, reply_markup=kb.admin_menu)
             return
 
         buttons = []
@@ -390,8 +335,8 @@ async def station_management(callback: CallbackQuery):
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"station_manage:{station_id}")])
 
         buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await callback.message.answer("🏢 Керування станціями:", reply_markup=keyboard)
+        keyboard = kb.make_keyboard(buttons)
+        await callback.message.answer(MSG_STATION_MANAGEMENT, reply_markup=keyboard)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -404,7 +349,7 @@ async def station_manage(callback: CallbackQuery):
         station_id = int(callback.data.split(":")[1])
         station = db.get_station_by_id(station_id)
         if not station:
-            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_STATIONS_NOT_FOUND, reply_markup=kb.admin_menu)
             return
 
         is_active = bool(station[4])
@@ -415,7 +360,7 @@ async def station_manage(callback: CallbackQuery):
             f"Локація: {station[2]}\n"
             f"Статус роботи: {station[3]}\n"
             f"Активна: {'так' if is_active else 'ні'}\n"
-            f"Видима для клієнта: {'так' if is_visible else 'ні'}\n"
+            f"Видима для клієнтів: {'так' if is_visible else 'ні'}\n"
             f"Порядок: {sort_order}"
         )
         await callback.message.answer(
@@ -442,7 +387,7 @@ async def station_toggle_visibility(callback: CallbackQuery):
 
         station = db.get_station_by_id(station_id)
         if not station:
-            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_STATIONS_NOT_FOUND, reply_markup=kb.admin_menu)
             return
 
         await callback.message.answer(
@@ -463,12 +408,12 @@ async def station_toggle_active(callback: CallbackQuery):
         target_active = active_raw == "1"
 
         if not db.update_station_activity(station_id, target_active):
-            await callback.message.answer("⚠️ Не вдалося оновити активність станції")
+            await callback.message.answer(MSG_STATION_ACTIVITY_FAIL)
             return
 
         station = db.get_station_by_id(station_id)
         if not station:
-            await callback.message.answer("Станцію не знайдено", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_STATIONS_NOT_FOUND, reply_markup=kb.admin_menu)
             return
 
         await callback.message.answer(
@@ -489,7 +434,7 @@ async def rent_by_day(callback: CallbackQuery):
         dates = db.get_rent_dates_by_user()
 
         if not dates:
-            await callback.message.answer("Немає оренд.", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_RENTS, reply_markup=kb.admin_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
             return
 
@@ -504,9 +449,9 @@ async def rent_by_day(callback: CallbackQuery):
             callback_data="back_to_main_menu"
         )])
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
-        await callback.message.answer("Оберіть дату:", reply_markup=keyboard)
+        await callback.message.answer(MSG_CHOOSE_DATE, reply_markup=keyboard)
 
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
@@ -520,7 +465,7 @@ async def rent_by_day(callback: CallbackQuery):
         dates = db.get_rent_dates_by_user()
 
         if not dates:
-            await callback.message.answer("Немає оренд.", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_RENTS, reply_markup=kb.admin_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
             return
 
@@ -535,9 +480,9 @@ async def rent_by_day(callback: CallbackQuery):
             callback_data="back_to_main_menu"
         )])
 
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
-        await callback.message.answer("Оберіть дату:", reply_markup=keyboard)
+        await callback.message.answer(MSG_CHOOSE_DATE, reply_markup=keyboard)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -566,8 +511,8 @@ async def show_rents_by_date(callback: CallbackQuery):
                 callback_data="back_to_main_menu"
             )])
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await callback.message.answer("Оберіть оренду:", reply_markup=keyboard)
+            keyboard = kb.make_keyboard(buttons)
+            await callback.message.answer(MSG_CHOOSE_RENT, reply_markup=keyboard)
 
             await callback.answer()
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
@@ -684,11 +629,11 @@ async def lockerStatus(call: CallbackQuery):
                 callback_data = f"locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='Назад', callback_data=f'back_to_main_menu')])
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            keyboard = kb.make_keyboard(buttons)
 
             await call.message.answer(text, reply_markup=keyboard)
         else:
-            await call.message.answer('Інформація про комірки відсутня', reply_markup=kb.admin_menu)
+            await call.message.answer(MSG_NO_LOCKER_INFO, reply_markup=kb.admin_menu)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -701,19 +646,11 @@ async def back_to_main_menu(callback: CallbackQuery):
         tg_id = callback.from_user.id
         user_exist = db.user_exists(tg_id)
         if tg_id in config.tg_bot.admin_ids:
-            await bot.send_message(tg_id, 'Вітаємо адміне:', reply_markup=kb.admin_menu)
+            await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
         elif user_exist:
-            await bot.send_message(tg_id,
-                                   'Як орендувати сапборд?\n\n'
-                                   '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
-                                   '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                   '🚪 Початок оренди — після оплати відкрийте комірку (або автостарт оренди через 5 хв).\n\n'
-                                   '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
-                                   '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
-                                   '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
-                                   reply_markup=kb.user_menu)
+            await bot.send_message(tg_id, MSG_USER_WELCOME, reply_markup=kb.user_menu)
         else:
-            await bot.send_message(tg_id, 'Пройдіть реєстрацію:', reply_markup=kb.reg_menu)
+            await bot.send_message(tg_id, MSG_REGISTER_PROMPT, reply_markup=kb.reg_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
 
     except Exception as e:
@@ -737,12 +674,7 @@ async def openLocker(call: CallbackQuery):
                         await switch_on_handler(locker_id)
                     except Exception as e:
                         print(f"🚨 Помилка при відкритті комірки: {e}")
-                        retry_keyboard = InlineKeyboardMarkup(
-                            inline_keyboard=[
-                                [InlineKeyboardButton(text="🔁 Спробувати ще раз", callback_data=f"openLocker:{rent_id}")],
-                                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main_menu")]
-                            ]
-                        )
+                        retry_keyboard = kb.open_locker_retry_keyboard(rent_id)
                         await call.message.answer(
                             "⚠️ Не вдалося відкрити комірку. Перевіряємо з’єднання із системою.\nСпробуйте ще раз.",
                             reply_markup=retry_keyboard
@@ -750,13 +682,15 @@ async def openLocker(call: CallbackQuery):
                         return
 
                     if rent[12] == 'Очікування відкриття':
-                        await bot.send_message(rent[1], 'Розпочато оренду')
+                        await bot.send_message(rent[1], MSG_RENT_STARTED)
                         db.rent_update_status_and_timer('Оренда', int(rent[4]) * 4, rent[0])
                         db.locker_status("Оренда", rent[3])
-                    await call.message.answer('Комірку відкрито', reply_markup=kb.user_menu)
+                    items = _my_rent_items(call.from_user.id)
+                    keyboard = kb.my_rent_keyboard(items) if items else kb.user_menu
+                    await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
                     asyncio.create_task(delayed_switch_off(locker_id))
         else:
-            await call.message.answer('Ця оренда закінчена чи більш не актуальна')
+            await call.message.answer(MSG_RENT_NOT_ACTIVE)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -806,7 +740,7 @@ async def adm_close_rent(call: CallbackQuery):
                     db.rent_update_status_and_timer('Завершено адміністратором', 0, rent[0])
                     await call.message.answer(f'Оренда №{rent[0]} завершена')
         else:
-            await call.message.answer('Жодна оренда не повязана')
+            await call.message.answer(MSG_NO_LINKED_RENTS)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -835,20 +769,11 @@ async def locker_action(call: CallbackQuery):
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
         if not locker:
-            await call.message.answer('Комірку не знайдено')
+            await call.message.answer(MSG_LOCKER_NOT_FOUND)
             return
         station_label = _station_label(locker[1])
-        buttons = []
-        buttons.append(
-            [InlineKeyboardButton(text=f'🔓 Відкрити ком.{locker[2]} ({station_label})', callback_data=f'adm_openLocker:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'♻️ Резервація  ком.{locker[2]} ({station_label})', callback_data=f'adm_reserve:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'➖ Завершити повязані оренди', callback_data=f'adm_close_rent:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text=f'Статус сенсорів', callback_data=f'test:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text='Назад', callback_data=f'back_to_main_menu')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await call.message.answer('Оберіть дію:', reply_markup=keyboard)
+        keyboard = kb.locker_action_keyboard(locker_id, locker[2], station_label)
+        await call.message.answer(MSG_CHOOSE_ACTION, reply_markup=keyboard)
         await bot.delete_message(call.message.chat.id, call.message.message_id)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -865,7 +790,7 @@ async def perlim(call: CallbackQuery):
 
         db.surcharge_update_status('Враховано', surcharge_id, rent_id)
 
-        await bot.send_message(rent[1], 'Дякуємо!',
+        await bot.send_message(rent[1], MSG_THANKS,
                                reply_markup=kb.user_menu)
 
         await bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -904,12 +829,11 @@ async def get_photo(message: Message):
                 db.update_status_and_timer_for_rent(message.from_user.id, rent[2], rent[3],
                                                     'Перевірка оплати', 0, file_type, file_id, 'Повторний запит')
 
-            await message.answer("✅ Очікуйте перевірку менеджером (до 5 хвилин)")
+            await message.answer(MSG_PAYMENT_REVIEW_WAIT)
             for admin in config.tg_bot.admin_ids:
-                await bot.send_message(admin, "✅ Користувач оновив платіний документ. Потрібо перевірити",
-                                       reply_markup=kb.admin_menu)
+                await bot.send_message(admin, MSG_PAYMENT_UPDATED_ADM, reply_markup=kb.admin_menu)
         else:
-            await message.answer('Для оплати фото не потрібне. Після транзакції підтвердження приходить автоматично.')
+            await message.answer(MSG_PHOTO_NOT_NEEDED)
     except Exception as e:
         log_exception(e)
 
@@ -917,9 +841,7 @@ async def get_photo(message: Message):
 @router.message(Command("get_info_1"))
 async def start(message: Message):
     try:
-        await message.answer(
-            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
-        )
+        await message.answer(MSG_COMMAND_DISABLED)
     except Exception as e:
         log_exception(e)
         return "Помилка при отриманні стану сутності."
@@ -928,12 +850,9 @@ async def start(message: Message):
 @router.message(Command("get_info_2"))
 async def start(message: Message):
     try:
-        await message.answer(
-            "Команда відключена. Для діагностики використовуйте стан комірки через меню станцій (station-level HA)."
-        )
+        await message.answer(MSG_COMMAND_DISABLED)
     except Exception as e:
         log_exception(e)
-        return "Помилка при отриманні стану сутності."
 
 
 def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool:
@@ -1033,11 +952,11 @@ async def f_locker_status(callback: CallbackQuery):
                 callback_data="back_to_main_menu"
             )])
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            keyboard = kb.make_keyboard(buttons)
 
-            await bot.send_message(callback.from_user.id, '▶️ Оберіть станцію:', reply_markup=keyboard)
+            await bot.send_message(callback.from_user.id, MSG_CHOOSE_STATION_ADM, reply_markup=keyboard)
         else:
-            await callback.message.answer('🤷‍♂️Немає активних станцій', reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_ACTIVE_STATIONS_ADM, reply_markup=kb.admin_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 f_locker_status: {e}")
@@ -1063,11 +982,11 @@ async def f_locker_status(call: CallbackQuery):
                 callback_data = f"f_locker_action:{locker_id}"
                 buttons.append([InlineKeyboardButton(text=locker_text, callback_data=callback_data)])
             buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status')])
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            keyboard = kb.make_keyboard(buttons)
 
             await call.message.answer(text, reply_markup=keyboard)
         else:
-            await call.message.answer('Інформація про комірки відсутня', reply_markup=kb.admin_menu)
+            await call.message.answer(MSG_NO_LOCKER_INFO, reply_markup=kb.admin_menu)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -1082,13 +1001,7 @@ async def f_locker_action(call: CallbackQuery):
         kit = db.get_inventory_kit_by_locker_and_station_id(locker[1], locker[0])
         station_label = _station_label(locker[1])
 
-        buttons = []
-        buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text=f'🗓 Резервація', callback_data=f'f_adm_reserve:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'✅ Завершити оренду', callback_data=f'f_adm_close_rent:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
         state1, state2 = await get_locker_states(locker)
 
@@ -1113,15 +1026,9 @@ async def f_adm_openLocker(call: CallbackQuery):
         await switch_on_handler(locker_id)
         asyncio.create_task(delayed_switch_off(locker_id))
 
-        buttons = []
-        buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text=f'🗓 Резервація', callback_data=f'f_adm_reserve:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'✅ Завершити оренду', callback_data=f'f_adm_close_rent:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
-        await call.message.answer('Комірку відкрито', reply_markup=keyboard)
+        await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -1134,20 +1041,14 @@ async def f_adm_reserve(call: CallbackQuery):
         locker_id = call.data.split(":")[1]
         locker = db.get_locker_by_locker_id(locker_id)
 
-        buttons = []
-        buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text=f'🗓 Резервація', callback_data=f'f_adm_reserve:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'✅ Завершити оренду', callback_data=f'f_adm_close_rent:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
         if locker[3] == 'Обслуговування':
             db.locker_status('Доступна оренда', locker_id)
-            await call.message.answer('Статус змінено на Доступна оренда', reply_markup=keyboard)
+            await call.message.answer(MSG_STATUS_AVAILABLE, reply_markup=keyboard)
         else:
             db.locker_status('Обслуговування', locker_id)
-            await call.message.answer('Статус змінено на Обслуговування', reply_markup=keyboard)
+            await call.message.answer(MSG_STATUS_MAINTENANCE, reply_markup=keyboard)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -1162,13 +1063,7 @@ async def f_adm_close_rent(call: CallbackQuery):
         db.locker_status('Доступна оренда', locker_id)
         all_rent_by_locker = db.get_all_actual_rent()
 
-        buttons = []
-        buttons.append([InlineKeyboardButton(text=f'🔓 Відкрити', callback_data=f'f_adm_openLocker:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text=f'🗓 Резервація', callback_data=f'f_adm_reserve:{locker_id}')])
-        buttons.append(
-            [InlineKeyboardButton(text=f'✅ Завершити оренду', callback_data=f'f_adm_close_rent:{locker_id}')])
-        buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_locker_status:{locker[1]}')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
         if len(all_rent_by_locker) > 0:
             counter = 0
@@ -1179,11 +1074,11 @@ async def f_adm_close_rent(call: CallbackQuery):
                     db.rent_update_status_and_timer('Завершено адміністратором', 0, rent[0])
                     await call.message.answer(f'Оренда №{rent[0]} завершена')
             if counter > 0:
-                await call.message.answer('Всі повязані оренди завершені', reply_markup=keyboard)
+                await call.message.answer(MSG_ALL_RENTS_CLOSED, reply_markup=keyboard)
             else:
-                await call.message.answer('Не знайдено повязаних оренд', reply_markup=keyboard)
+                await call.message.answer(MSG_NO_LINKED_RENTS_F, reply_markup=keyboard)
         else:
-            await call.message.answer('Не знайдено повязаних оренд', reply_markup=keyboard)
+            await call.message.answer(MSG_NO_LINKED_RENTS_F, reply_markup=keyboard)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -1193,7 +1088,7 @@ async def f_adm_close_rent(call: CallbackQuery):
 async def f_rent(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer('Оренди:', reply_markup=kb.f_rent_menu)
+        await callback.message.answer(MSG_RENTS_TITLE, reply_markup=kb.f_rent_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -1212,11 +1107,11 @@ async def active_rents(callback: CallbackQuery):
                 buttons.append([InlineKeyboardButton(text=f"#{rent[0]} | {user_info[3]} | {rent[12]}",
                                                      callback_data=f"about_actual_rent:{rent[0]}")])
             buttons.append([InlineKeyboardButton(text=f"🔙 Назад", callback_data="f_rent")])
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await callback.message.answer('Активні оренди:', reply_markup=keyboard)
+            keyboard = kb.make_keyboard(buttons)
+            await callback.message.answer(MSG_ACTIVE_RENTS_TITLE, reply_markup=keyboard)
 
         else:
-            await callback.message.answer('Активні оренди відсуті', reply_markup=kb.f_rent_menu)
+            await callback.message.answer(MSG_NO_ACTIVE_RENTS_ADM, reply_markup=kb.f_rent_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -1238,9 +1133,15 @@ async def about_actual_rent(call: CallbackQuery):
         else:
             rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
 
+        _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
         buttons = []
+        if rent[8] == 'NOT':
+            sc_id = per_limit[0] if per_limit else 0
+            buttons.append([InlineKeyboardButton(text='🚫 Скасувати доплату', callback_data=f'adm_cancel_surcharge:{sc_id}:{rent[0]}')])
+        if rent[12] in _active_statuses:
+            buttons.append([InlineKeyboardButton(text='🔴 Примусово завершити', callback_data=f'adm_force_close_rent:{rent[0]}')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'active_rents')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
         about_actual_rent_text = f"<strong>Деталі оренди #{rent[1]}</strong>\n\n" \
                                  f"Кліент: {user_info[3]}\n" \
@@ -1296,7 +1197,7 @@ async def history_rents(callback: CallbackQuery):
         # Отримуємо всі дати
         dates = db.get_rent_dates_by_user()
         if not dates:
-            await callback.message.answer("Немає оренд.", reply_markup=kb.admin_menu)
+            await callback.message.answer(MSG_NO_RENTS, reply_markup=kb.admin_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
             return
 
@@ -1332,11 +1233,92 @@ async def history_rents(callback: CallbackQuery):
         buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main_menu")])
 
         # Відправка
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await callback.message.edit_text("Оберіть дату:", reply_markup=keyboard)
+        keyboard = kb.make_keyboard(buttons)
+        await callback.message.edit_text(MSG_CHOOSE_DATE, reply_markup=keyboard)
     except Exception as e:
         log_exception(e)
 
+@router.callback_query(F.data.startswith('adm_force_close_rent:'))
+async def adm_force_close_rent(call: CallbackQuery):
+    try:
+        await bot.answer_callback_query(call.id)
+        rent_id = call.data.split(":")[1]
+        rent = db.get_rent_by_id(rent_id)
+        if not rent:
+            await call.message.answer(MSG_RENT_NOT_FOUND)
+            return
+
+        base_time = int(rent[4] or 0)
+        timer = int(rent[13] or 0)
+
+        if timer >= 0:
+            total_time = base_time
+        else:
+            overtime_min = abs(timer) / 4
+            total = base_time + overtime_min
+            total_time = max(15, round(total / 15) * 15)
+
+        db.add_total_time(total_time, rent[0])
+        db.rent_update_status_and_timer('Завершено адміністратором', 0, rent[0])
+        db.locker_status('Доступна оренда', rent[3])
+
+        # Auto-cancel any unpaid surcharge for this rent.
+        per_limit = db.get_surcharge_by_rent(rent[0])
+        if per_limit and per_limit[4] == 'Очікує оплату':
+            db.cancel_surcharge(per_limit[0])
+
+        await bot.send_message(
+            rent[1],
+            f"✅ Вашу оренду №{rent[0]} завершено адміністратором.",
+            reply_markup=kb.user_menu,
+        )
+        await call.message.answer(
+            f"✅ Оренду №{rent[0]} завершено примусово.\n"
+            f"Загальний час: {total_time} хв.\n"
+            f"Комірку звільнено.",
+            reply_markup=kb.admin_menu,
+        )
+    except Exception as e:
+        log_exception(e)
+
+@router.callback_query(F.data.startswith('adm_cancel_surcharge:'))
+async def adm_cancel_surcharge(call: CallbackQuery):
+    try:
+        await bot.answer_callback_query(call.id)
+        _, surcharge_id, rent_id = call.data.split(":")
+        rent = db.get_rent_by_id(rent_id)
+        if not rent:
+            await call.message.answer(MSG_RENT_NOT_FOUND)
+            return
+
+        # Cancel surcharge record if one was passed.
+        if surcharge_id != '0':
+            db.cancel_surcharge(surcharge_id)
+
+        # Always mark pay_2 as settled.
+        db.rent_update_pay_2_status(rent_id)
+
+        # Close rent and free locker only if still active.
+        _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
+        if rent[12] in _active_statuses:
+            db.rent_update_status_and_timer('Завершено адміністратором', 0, rent_id)
+            db.locker_status('Доступна оренда', rent[3])
+            admin_note = "Оренду завершено. Комірку звільнено."
+        else:
+            admin_note = "Оренда вже завершена."
+
+        await bot.send_message(
+            rent[1],
+            f"✅ Доплату за вашу оренду №{rent_id} скасовано адміністратором.\n"
+            f"Борг погашено автоматично.",
+            reply_markup=kb.user_menu,
+        )
+        await call.message.answer(
+            f"✅ Доплату за оренду №{rent_id} скасовано. {admin_note}",
+            reply_markup=kb.admin_menu,
+        )
+    except Exception as e:
+        log_exception(e)
 
 @router.callback_query(F.data.startswith("f_rent_date_"))
 async def show_rents_by_date(callback: CallbackQuery):
@@ -1351,11 +1333,11 @@ async def show_rents_by_date(callback: CallbackQuery):
                 buttons.append([InlineKeyboardButton(text=f"#{rent[0]} | {user_info[3]} | {rent[12]}",
                                                      callback_data=f"history_element:{rent[0]}")])
             buttons.append([InlineKeyboardButton(text=f"🔙 Назад", callback_data="history_rents")])
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await callback.message.answer('Активні оренди:', reply_markup=keyboard)
+            keyboard = kb.make_keyboard(buttons)
+            await callback.message.answer(MSG_ACTIVE_RENTS_TITLE, reply_markup=keyboard)
 
         else:
-            await callback.message.answer('Активні оренди відсуті', reply_markup=kb.f_rent_menu)
+            await callback.message.answer(MSG_NO_ACTIVE_RENTS_ADM, reply_markup=kb.f_rent_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -1378,8 +1360,11 @@ async def about_actual_rent(call: CallbackQuery):
             rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
 
         buttons = []
+        if rent[8] == 'NOT':
+            sc_id = per_limit[0] if per_limit else 0
+            buttons.append([InlineKeyboardButton(text='🚫 Скасувати доплату', callback_data=f'adm_cancel_surcharge:{sc_id}:{rent[0]}')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_rent')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
         about_actual_rent_text = f"<strong>Деталі оренди #{rent[1]}</strong>\n\n" \
                                  f"Кліент: {user_info[3]}\n" \
@@ -1482,7 +1467,7 @@ async def f_rent(callback: CallbackQuery):
         buttons = []
         buttons.append([InlineKeyboardButton(text='Експорт в ехcеl', callback_data=f'export')])
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'back_to_main_menu')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
 
 
@@ -1500,7 +1485,7 @@ async def f_rent(callback: CallbackQuery):
 
         buttons = []
         buttons.append([InlineKeyboardButton(text='🔙 Назад', callback_data=f'f_statistic')])
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = kb.make_keyboard(buttons)
 
         file = FSInputFile('rent_export.xlsx')
         await bot.send_document(chat_id=callback.from_user.id, document=file, caption="Експорт таблиці оренд", reply_markup=keyboard)

@@ -1,4 +1,5 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
@@ -12,6 +13,7 @@ from config_data.config import Config, load_config
 from kb import kb
 from create_bot import bot
 from db import Database
+from text.text import MSG_USER_WELCOME
 from helper.helper import log_exception, clear_messages
 
 config: Config = load_config()
@@ -157,7 +159,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
             return
 
         data = await state.get_data()
-        create_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+        create_date = datetime.now(ZoneInfo('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
 
         db.add_new_user(
             tg_id=callback.from_user.id,
@@ -169,14 +171,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         )
 
         await callback.message.answer("🎉 Реєстрація успішна!", reply_markup=ReplyKeyboardRemove())
-        await callback.message.answer('Як орендувати сапборд?\n\n'
-                                      '📍 Резервація — оберіть станцію, комірку та тривалість.\n\n'
-                                      '💳 Оплата — оплатіть за посиланням, надішліть фото квитанції.\n\n'
-                                      '🚪 Початок оренди — після оплати відкрийте комірку (або автостарт оренди через 5 хв).\n\n'
-                                      '⏳ Кінець оренди — поверніть спорядження в комірку, сфотографуйте, надішліть фото й закрийте комірку.\n\n'
-                                      '💰 Доплати — у разі перевищення часу чи пошкодження спорядження нараховується додаткова оплата.\n\n'
-                                      '✅ Завершення — після перевірки фото бот підтвердить: Оренду завершено',
-                                      reply_markup=kb.user_menu)
+        await callback.message.answer(MSG_USER_WELCOME, reply_markup=kb.user_menu)
         await state.clear()
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:

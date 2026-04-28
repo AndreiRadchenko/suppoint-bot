@@ -1,10 +1,10 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import StateFilter
 from config_data.config import Config, load_config
 from create_bot import bot
@@ -22,19 +22,6 @@ class ReportProblem(StatesGroup):
     waiting_for_file = State()
     confirm = State()
 
-# ======= КНОПКИ =======
-def confirm_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Підтвердити", callback_data="confirm_problem")],
-        [InlineKeyboardButton(text="❌ Скасувати", callback_data="cancel_problem")]
-    ])
-
-def skip_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пропустити", callback_data="skip_file")],
-        [InlineKeyboardButton(text="❌ Скасувати", callback_data="cancel_problem")]
-    ])
-
 # ======= СТАРТ =======
 @router.callback_query(F.data == "error_report")
 async def start_report(callback: CallbackQuery, state: FSMContext):
@@ -50,7 +37,7 @@ async def start_report(callback: CallbackQuery, state: FSMContext):
 async def get_problem_text(message: Message, state: FSMContext):
     try:
         await state.update_data(description=message.text)
-        await message.answer("📎 Надішліть фото або документ (або натисніть 'Пропустити')", reply_markup=skip_keyboard())
+        await message.answer("📎 Надішліть фото або документ (або натисніть 'Пропустити')", reply_markup=kb.error_report_skip_menu)
         await state.set_state(ReportProblem.waiting_for_file)
         await clear_messages(message.chat.id, message.message_id, 15)
     except Exception as e:
@@ -69,7 +56,7 @@ async def get_problem_file(message: Message, state: FSMContext):
             file_id = message.document.file_id
         await state.update_data(file_id=file_id, file_type=file_type)
         text = f"🔔 Ви описали проблему:\n\n{data['description']}\n\n📎 Додано файл."
-        await message.answer(text, reply_markup=confirm_keyboard())
+        await message.answer(text, reply_markup=kb.error_report_confirm_menu)
         await state.set_state(ReportProblem.confirm)
         await clear_messages(message.chat.id, message.message_id, 15)
     except Exception as e:
@@ -80,7 +67,7 @@ async def get_problem_file(message: Message, state: FSMContext):
 async def skip_file(call: CallbackQuery, state: FSMContext):
     try:
         data = await state.get_data()
-        await call.message.edit_text(f"🔔 Ви описали проблему:\n\n{data['description']}\n\n(Без файлу)", reply_markup=confirm_keyboard())
+        await call.message.edit_text(f"🔔 Ви описали проблему:\n\n{data['description']}\n\n(Без файлу)", reply_markup=kb.error_report_confirm_menu)
         await state.set_state(ReportProblem.confirm)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
@@ -101,8 +88,8 @@ async def confirm_problem(call: CallbackQuery, state: FSMContext):
         else:
             current_rent_text = 'Аренда відсутня'
 
-        now = datetime.now()
-        create_date = now.strftime("%d.%m.%Y %H:%M")
+        now = datetime.now(ZoneInfo('Europe/Kyiv'))
+        create_date = now.strftime("%Y-%m-%d %H:%M")
 
         db.create_problem_report(user[1], user[2], user[4], current_rent_text, data.get('file_type'), data.get('file_id'), data.get('description'), 'Новий', create_date)
 

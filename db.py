@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 MAX_VISIBLE_STATIONS = 10
@@ -47,7 +48,12 @@ class Database:
                         created_at TEXT NOT NULL,
                         paid_at TEXT,
                         updated_at TEXT NOT NULL,
-                        invoice_url TEXT
+                        invoice_url TEXT,
+                        fiscal_status TEXT NOT NULL DEFAULT 'not_started',
+                        fiscal_external_id TEXT,
+                        fiscal_provider TEXT,
+                        fiscal_error TEXT,
+                        fiscal_updated_at TEXT
                     )
                     """
                 )
@@ -91,10 +97,28 @@ class Database:
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_receipt_url TEXT")
                     if not self._column_exists(cursor, 'surcharge', 'topup_invoice_id'):
                         cursor.execute("ALTER TABLE surcharge ADD COLUMN topup_invoice_id TEXT")
+                    if not self._column_exists(cursor, 'surcharge', 'reminder_1h_sent'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN reminder_1h_sent INTEGER DEFAULT 0")
+                    if not self._column_exists(cursor, 'surcharge', 'reminder_3h_sent'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN reminder_3h_sent INTEGER DEFAULT 0")
+                    if not self._column_exists(cursor, 'surcharge', 'last_daily_reminder_date'):
+                        cursor.execute("ALTER TABLE surcharge ADD COLUMN last_daily_reminder_date TEXT")
 
                 if self._table_exists(cursor, 'payment_transactions'):
                     if not self._column_exists(cursor, 'payment_transactions', 'invoice_url'):
                         cursor.execute("ALTER TABLE payment_transactions ADD COLUMN invoice_url TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_status'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_status TEXT NOT NULL DEFAULT 'not_started'")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_external_id'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_external_id TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_provider'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_provider TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_error'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_error TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'fiscal_updated_at'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN fiscal_updated_at TEXT")
+                    if not self._column_exists(cursor, 'payment_transactions', 'link_message_id'):
+                        cursor.execute("ALTER TABLE payment_transactions ADD COLUMN link_message_id INTEGER")
 
                 conn.commit()
         except sqlite3.Error as e:
@@ -220,9 +244,9 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 query = """
-                SELECT DISTINCT SUBSTR(data_create, 1, 10) as rent_date
+                SELECT DISTINCT strftime('%d.%m.%Y', data_create) as rent_date
                 FROM rent
-                ORDER BY rent_date DESC
+                ORDER BY date(data_create) DESC
                 """
                 return [row[0] for row in cursor.execute(query).fetchall()]
         except sqlite3.Error as e:
@@ -235,7 +259,7 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE SUBSTR(data_create, 1, 10) = ?
+                WHERE strftime('%d.%m.%Y', data_create) = ?
                 ORDER BY data_create
                 """
                 return cursor.execute(query, (date_str,)).fetchall()
@@ -249,8 +273,8 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE strftime('%W', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%W', 'now')
-                  AND strftime('%Y', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%Y', 'now')
+                WHERE strftime('%W', data_create) = strftime('%W', 'now')
+                  AND strftime('%Y', data_create) = strftime('%Y', 'now')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -264,8 +288,7 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE date(substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2))
-                      = date('now', 'localtime')
+                WHERE date(data_create) = date('now', 'localtime')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -279,8 +302,8 @@ class Database:
                 cursor = conn.cursor()
                 query = """
                 SELECT * FROM rent
-                WHERE strftime('%m', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%m', 'now')
-                  AND strftime('%Y', substr(data_create, 7, 4) || '-' || substr(data_create, 4, 2) || '-' || substr(data_create, 1, 2)) = strftime('%Y', 'now')
+                WHERE strftime('%m', data_create) = strftime('%m', 'now')
+                  AND strftime('%Y', data_create) = strftime('%Y', 'now')
                 ORDER BY data_create
                 """
                 return cursor.execute(query).fetchall()
@@ -660,6 +683,8 @@ class Database:
             checkout_url,
                 status='pending',
                 invoice_url=None,
+                fiscal_status='not_started',
+                fiscal_provider='checkbox',
     ):
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -670,13 +695,15 @@ class Database:
                     INSERT OR REPLACE INTO payment_transactions (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, created_at, updated_at, invoice_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        checkout_url, status, created_at, updated_at, invoice_url,
+                        fiscal_status, fiscal_provider, fiscal_updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payment_type, tg_id, rent_id, surcharge_id, station_id, locker_ids,
                         amount_minor, amount_grn, reference, external_invoice_id,
-                        checkout_url, status, now, now, invoice_url
+                        checkout_url, status, now, now, invoice_url,
+                        fiscal_status, fiscal_provider, now
                     )
                 )
                 conn.commit()
@@ -705,6 +732,18 @@ class Database:
             print("Помилка get_pending_payment_transactions:", e)
             return []
 
+    def save_link_message_id(self, invoice_id: str, message_id: int):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE payment_transactions SET link_message_id = ? WHERE external_invoice_id = ?",
+                    (message_id, invoice_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка save_link_message_id:", e)
+
     def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None, invoice_url=None):
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -724,6 +763,62 @@ class Database:
                 conn.commit()
         except sqlite3.Error as e:
             print("Помилка update_payment_transaction_status:", e)
+
+    def update_payment_transaction_fiscal(
+        self,
+        invoice_id,
+        fiscal_status,
+        receipt_url=None,
+        fiscal_external_id=None,
+        fiscal_provider='checkbox',
+        fiscal_error=None,
+    ):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now = datetime.utcnow().isoformat()
+                cursor.execute(
+                    """
+                    UPDATE payment_transactions
+                    SET fiscal_status = ?,
+                        receipt_url = COALESCE(?, receipt_url),
+                        fiscal_external_id = COALESCE(?, fiscal_external_id),
+                        fiscal_provider = COALESCE(?, fiscal_provider),
+                        fiscal_error = ?,
+                        fiscal_updated_at = ?,
+                        updated_at = ?
+                    WHERE external_invoice_id = ?
+                    """,
+                    (
+                        fiscal_status,
+                        receipt_url,
+                        fiscal_external_id,
+                        fiscal_provider,
+                        fiscal_error,
+                        now,
+                        now,
+                        invoice_id,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка update_payment_transaction_fiscal:", e)
+
+    def get_pending_fiscal_transactions(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    """
+                    SELECT *
+                    FROM payment_transactions
+                    WHERE status = 'success'
+                      AND COALESCE(fiscal_status, 'not_started') IN ('not_started', 'pending', 'processing')
+                    """
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_pending_fiscal_transactions:", e)
+            return []
 
     def get_rent_by_tg_station_and_locker_ids(self, tg_id, station_id, locker_ids, status):
         try:
@@ -774,7 +869,7 @@ class Database:
                 if row:
                     return row[0]
 
-                create_date = datetime.now().strftime("%d.%m.%Y %H:%M")
+                create_date = datetime.now(ZoneInfo('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
                 cursor.execute(
                     "INSERT INTO surcharge (tg_id, file_type, file_id, date_create, status, to_rent) VALUES (?, ?, ?, ?, ?, ?)",
                     (tg_id, 'none', 'none', create_date, 'Очікує оплату', str(rent_id))
@@ -913,7 +1008,90 @@ class Database:
                 result = cursor.execute("SELECT * FROM surcharge WHERE to_rent = ?", (rent_id,)).fetchone()
             return result
         except sqlite3.Error as e:
-            print("Помилка в get_all_active_stations:", e)
+            print("Помилка в get_surcharge_by_rent:", e)
+
+    def get_unpaid_surcharges_by_user(self, tg_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM surcharge WHERE tg_id = ? AND status = 'Очікує оплату'",
+                    (tg_id,)
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_unpaid_surcharges_by_user:", e)
+            return []
+
+    def get_all_unpaid_surcharges(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM surcharge WHERE status = 'Очікує оплату'"
+                ).fetchall()
+        except sqlite3.Error as e:
+            print("Помилка get_all_unpaid_surcharges:", e)
+            return []
+
+    def get_topup_tx_by_surcharge_id(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM payment_transactions WHERE surcharge_id = ? AND payment_type = 'topup' ORDER BY id DESC LIMIT 1",
+                    (surcharge_id,)
+                ).fetchone()
+        except sqlite3.Error as e:
+            print("Помилка get_topup_tx_by_surcharge_id:", e)
+            return None
+
+    def cancel_surcharge(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET status = 'Скасовано' WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка cancel_surcharge:", e)
+
+    def mark_reminder_1h(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET reminder_1h_sent = 1 WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_reminder_1h:", e)
+
+    def mark_reminder_3h(self, surcharge_id):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET reminder_3h_sent = 1 WHERE id = ?",
+                    (surcharge_id,)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_reminder_3h:", e)
+
+    def mark_daily_reminder(self, surcharge_id, date_str):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE surcharge SET last_daily_reminder_date = ? WHERE id = ?",
+                    (date_str, surcharge_id)
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            print("Помилка mark_daily_reminder:", e)
 
     def export_all_rent_to_excel(self, excel_path):
         try:

@@ -1,11 +1,12 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InputMediaPhoto
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from config_data.config import Config, load_config
 from helper.helper import log_exception, clear_messages
 from kb import kb
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from create_bot import bot
 from db import Database
 import base64
@@ -71,9 +72,7 @@ async def show_locker_selection(message: Message, state: FSMContext, station_id:
         callback_data = f"cell_{locker_id}"
         buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
-    buttons.append([InlineKeyboardButton(text="✅ Підтвердити", callback_data="done_cells")])
-    buttons.append([InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    keyboard = kb.rent_locker_keyboard(buttons)
 
     locker_text = '🏄‍♂️ <strong>Комплект "Стандарт"</strong> - ідеально для однієї особи з базовим багажем\n\n' \
                   '🌊 Надувна дошка Gladiator Origin 10’6\n' \
@@ -178,9 +177,7 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
                 callback_data = f"station_inactive_{station_id}"
             keyboard_buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
 
-        keyboard_buttons.append([InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")])
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        keyboard = kb.rent_station_keyboard(keyboard_buttons)
 
         await callback.message.answer("📍 <strong>Резервація</strong>:\n<strong>Оберіть станцію прокату</strong>\n", reply_markup=keyboard)
         await state.set_state(RentBoard.choosing_station)
@@ -223,7 +220,31 @@ async def choose_station(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(station_id=station_id, selected_lockers=[])
 
+        # --- ПЕРЕВІРКА НЕСПЛАЧЕНИХ ДОПЛАТ ---
+        tg_id = callback.from_user.id
+        unpaid = db.get_unpaid_surcharges_by_user(tg_id)
+        if unpaid:
+            lines = []
+            for sc in unpaid:
+                tx = db.get_topup_tx_by_surcharge_id(sc[0])
+                if tx and tx[11]:
+                    lines.append(f"• Оренда #{sc[6]}: <a href='{tx[11]}'>Оплатити доплату</a>")
+                else:
+                    lines.append(f"• Оренда #{sc[6]}: очікує обробки адміністратором")
+            links_text = "\n".join(lines)
+            await callback.message.answer(
+                f"🚫 <b>Нова оренда заблокована</b>\n\n"
+                f"У вас є несплачені доплати за попередні оренди. "
+                f"Будь ласка, сплатіть борг, щоб розпочати нову оренду.\n\n"
+                f"{links_text}",
+                reply_markup=kb.user_menu,
+            )
+            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+            await state.clear()
+            return
+
         await show_locker_selection(callback.message, state, station_id)
+        # await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
 
@@ -280,8 +301,18 @@ async def done_selecting_cells(callback: CallbackQuery, state: FSMContext):
                 await show_locker_selection(callback.message, state, station_id)
                 return
 
-        now = datetime.now()
-        create_date = now.strftime("%d.%m.%Y %H:%M")
+        # Cancel any stale pending rents for the selected lockers (abandoned bookings).
+        # Without this, a second booking for the same locker leaves the first rent in
+        # 'Очікує оплату' status and the payment webhook promotes both to 'Очікування відкриття',
+        # causing duplicate entries in the user's active-rent menu.
+        stale_pending = db.get_all_reserve_by_tg(callback.from_user.id)
+        for stale in stale_pending:
+            if stale[3] in selected:
+                db.cancel_rent('Скасовано користувачем', stale[0])
+                db.locker_status('Доступна оренда', stale[3])
+
+        now = datetime.now(ZoneInfo('Europe/Kyiv'))
+        create_date = now.strftime("%Y-%m-%d %H:%M")
         for locker_id in selected:
             # Створюємо оренду зі статусом і таймером
             # Таймер задається виходячи з інтервала 15сек (1хв = 4, 60хв = 240)
@@ -290,20 +321,7 @@ async def done_selecting_cells(callback: CallbackQuery, state: FSMContext):
 
         await state.set_state(RentBoard.choosing_rent_time)
 
-        btn1 = InlineKeyboardButton(text="15хв", callback_data="time_15")
-        btn2 = InlineKeyboardButton(text="30хв", callback_data="time_30")
-        btn3 = InlineKeyboardButton(text="45хв", callback_data="time_45")
-        btn4 = InlineKeyboardButton(text="60хв", callback_data="time_60")
-        btn5 = InlineKeyboardButton(text="Більше", callback_data="time_more")
-        btn6 = InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [btn1, btn2],
-            [btn3, btn4],
-            [btn5],
-            [btn6]
-        ])
-
-        await callback.message.answer("📍 <strong>Резервація:</strong>\n<strong>Оберіть тривалість оренди</strong>", reply_markup=keyboard)
+        await callback.message.answer("📍 <strong>Резервація:</strong>\n<strong>Оберіть тривалість оренди</strong>", reply_markup=kb.rent_time_basic_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         log_exception(e)
@@ -318,37 +336,8 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
         time = callback.data.split("_")[1]
         if time == 'more':
             await state.set_state(RentBoard.choosing_rent_time)
-            btn1 = InlineKeyboardButton(text="15хв", callback_data="time_15")
-            btn2 = InlineKeyboardButton(text="30хв", callback_data="time_30")
-            btn3 = InlineKeyboardButton(text="45хв", callback_data="time_45")
-            btn4 = InlineKeyboardButton(text="60хв", callback_data="time_60")
-            btn5 = InlineKeyboardButton(text="1год 15хв", callback_data="time_75")
-            btn6 = InlineKeyboardButton(text="1год 30хв", callback_data="time_90")
-            btn7 = InlineKeyboardButton(text="1год 45хв", callback_data="time_105")
-            btn8 = InlineKeyboardButton(text="2год", callback_data="time_120")
-            btn9 = InlineKeyboardButton(text="2год 15хв", callback_data="time_135")
-            btn10 = InlineKeyboardButton(text="2год 30хв", callback_data="time_150")
-            btn11 = InlineKeyboardButton(text="2год 45хв", callback_data="time_165")
-            btn12 = InlineKeyboardButton(text="3год", callback_data="time_180")
-            btn13 = InlineKeyboardButton(text="3год 15хв", callback_data="time_195")
-            btn14 = InlineKeyboardButton(text="3год 30хв", callback_data="time_210")
-            btn15 = InlineKeyboardButton(text="3год 45хв", callback_data="time_225")
-            btn16 = InlineKeyboardButton(text="4год", callback_data="time_240")
-            btn17 = InlineKeyboardButton(text="5год", callback_data="time_300")
-            btn18 = InlineKeyboardButton(text="8год", callback_data="time_500")
-            btn19 = InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [btn1, btn2, btn3],
-                [btn4, btn5, btn6],
-                [btn7, btn8, btn9],
-                [btn10, btn11, btn12],
-                [btn13, btn14, btn15],
-                [btn16, btn17, btn18],
-                [btn19]
-            ])
-
             await callback.message.answer("📍 <strong>Резервація:</strong>\n<strong>Оберіть тривалість оренди</strong>",
-                                          reply_markup=keyboard)
+                                          reply_markup=kb.rent_time_extended_menu)
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
         else:
             time = int(callback.data.split("_")[1])
@@ -427,7 +416,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                 destination = f"Оренда спорядження. Станція: {station_name} ({station_location}). Тривалість {time} хв"
             else:
                 destination = f"Оренда спорядження. Станція: {station_name}. Тривалість {time} хв"
-            price_url = await payment_service.create_initial_invoice(
+            price_url, invoice_id = await payment_service.create_initial_invoice(
                 tg_id=callback.from_user.id,
                 station_id=station_id,
                 locker_ids=selected,
@@ -435,14 +424,10 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                 destination=destination,
             )
 
-            btn1 = InlineKeyboardButton(text="💳 Перейти до оплат", url=price_url)
-            btn2 = InlineKeyboardButton(text="❌ Скасувати", callback_data="rent_cancel")
-            pay_menu = InlineKeyboardMarkup(inline_keyboard=[
-                [btn1],
-                [btn2]
-            ])
+            pay_menu = kb.rent_pay_menu(price_url)
 
-            await callback.message.answer(price_text, reply_markup=pay_menu)
+            sent = await callback.message.answer(price_text, reply_markup=pay_menu)
+            db.save_link_message_id(invoice_id, sent.message_id)
             await state.clear()
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:

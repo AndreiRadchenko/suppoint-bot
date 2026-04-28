@@ -51,3 +51,20 @@ class MonobankClient:
                 if response.status >= 400:
                     raise RuntimeError(f"Monobank get_public_key error: {data}")
                 return data["key"]
+
+    async def send_receipt_email(self, invoice_id: str, email: str) -> dict:
+        payload = {
+            "invoiceId": invoice_id,
+            "email": email,
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.BASE_URL}/api/merchant/invoice/receipt",
+                headers=self._headers,
+                params=payload,
+                timeout=20,
+            ) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(f"Monobank send_receipt_email error: {data}")
+                return data
