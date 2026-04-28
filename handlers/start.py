@@ -4,7 +4,7 @@ from aiogram.fsm.state import default_state
 from create_bot import bot
 from text.text import (
     MSG_ADMIN_WELCOME, MSG_REGISTER_PROMPT, MSG_USER_WELCOME,
-    MSG_RENT_STARTED, MSG_MY_RENTS,
+    MSG_RENT_STARTED, MSG_MY_RENTS, MSG_SURCHARGE_REMINDER,
     MSG_SERVICES_INFO, MSG_PRE_REG_INFO, MSG_PRE_REG_PRICE,
     MSG_AUTO_PAYMENT_NOTE, MSG_NO_OPEN_PROBLEMS, MSG_NO_NEW_SURCHARGES,
     MSG_MANUAL_REJECT_DISABLED, MSG_MANUAL_RESEND_DISABLED, MSG_MANUAL_CONFIRM_DISABLED,
@@ -36,6 +36,7 @@ from aiogram.types import BotCommand
 from datetime import datetime
 from math import ceil
 from aiogram.types.input_file import FSInputFile
+from helper.utilits_funk import my_rent_open
 
 config: Config = load_config()
 db = Database(config.db.path)
@@ -68,6 +69,43 @@ def _my_rent_items(tg_id: int) -> list:
         if my_locker:
             items.append((rent[0], my_locker[2], _station_label(my_locker[1])))
     return items
+
+
+def _overtime_text(tg_id: int) -> str:
+    """Return a text block describing overtimed rents, or empty string if none."""
+    rents = db.get_all_my_rent(tg_id)
+    lines = []
+    for rent in rents:
+        if rent[12] == 'Оренда' and rent[13] < 0:
+            overtime_min = ceil(abs(rent[13]) * 15 / 60)
+            locker = db.get_locker_by_locker_id(rent[3])
+            locker_name = locker[2] if locker else f"#{rent[3]}"
+            lines.append(f"⏰ Оренда #{rent[0]} ({locker_name}): перевищено на {overtime_min} хв")
+    return "\n".join(lines)
+
+
+def _get_surcharge_info(tg_id: int):
+    """Return (to_rent, checkout_url) for the first unpaid surcharge with an active payment link, or None."""
+    surcharges = db.get_unpaid_surcharges_by_user(tg_id)
+    for sc in surcharges:
+        tx = db.get_topup_tx_by_surcharge_id(sc[0])
+        if tx and tx[11]:
+            return (sc[6], tx[11])
+    return None
+
+
+def _build_my_rent_text(tg_id: int) -> str:
+    """Build the full text for the my_rent message including overtime and surcharge info."""
+    parts = [MSG_MY_RENTS]
+    overtime = _overtime_text(tg_id)
+    if overtime:
+        parts.append(overtime)
+    surcharge_info = _get_surcharge_info(tg_id)
+    if surcharge_info:
+        to_rent, checkout_url = surcharge_info
+        parts.append(MSG_SURCHARGE_REMINDER.format(to_rent=to_rent, checkout_url=checkout_url))
+    return "\n\n".join(parts)
+
 
 @router.message(Command("start"))
 async def start(message: Message):
@@ -268,13 +306,46 @@ async def my_rent(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
 
-        items = _my_rent_items(callback.from_user.id)
+        tg_id = callback.from_user.id
+        items = _my_rent_items(tg_id)
+        surcharge_info = _get_surcharge_info(tg_id)
         if items:
             keyboard = kb.my_rent_keyboard(items)
-            await bot.send_message(callback.from_user.id, MSG_MY_RENTS, reply_markup=keyboard)
+            text = _build_my_rent_text(tg_id)
+            sent = await bot.send_message(tg_id, text, reply_markup=keyboard, parse_mode='HTML')
+            my_rent_open[tg_id] = (callback.message.chat.id, sent.message_id)
+        elif surcharge_info:
+            to_rent, checkout_url = surcharge_info
+            text = MSG_SURCHARGE_REMINDER.format(to_rent=to_rent, checkout_url=checkout_url)
+            await bot.send_message(tg_id, text, reply_markup=kb.user_menu, parse_mode='HTML')
+            my_rent_open.pop(tg_id, None)
         else:
             await callback.message.answer(MSG_NO_ACTIVE_RENTS, reply_markup=kb.user_menu)
+            my_rent_open.pop(tg_id, None)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        print(f"🚨 Загальна помилка: {e}")
+
+
+@router.callback_query(F.data == "refresh_my_rent")
+async def refresh_my_rent(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        tg_id = callback.from_user.id
+        items = _my_rent_items(tg_id)
+        if items:
+            keyboard = kb.my_rent_keyboard(items)
+            text = _build_my_rent_text(tg_id)
+            await bot.edit_message_text(
+                text, chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                reply_markup=keyboard, parse_mode='HTML'
+            )
+            my_rent_open[tg_id] = (callback.message.chat.id, callback.message.message_id)
+        else:
+            my_rent_open.pop(tg_id, None)
+            await callback.message.answer(MSG_NO_ACTIVE_RENTS, reply_markup=kb.user_menu)
+            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
@@ -644,6 +715,7 @@ async def back_to_main_menu(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
         tg_id = callback.from_user.id
+        my_rent_open.pop(tg_id, None)
         user_exist = db.user_exists(tg_id)
         if tg_id in config.tg_bot.admin_ids:
             await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
@@ -682,12 +754,18 @@ async def openLocker(call: CallbackQuery):
                         return
 
                     if rent[12] == 'Очікування відкриття':
-                        await bot.send_message(rent[1], MSG_RENT_STARTED)
+                        station = db.get_station_by_id(locker[1]) if locker else None
+                        location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                        cell = locker[2] if locker else str(locker_id)
+                        await bot.send_message(rent[1], MSG_RENT_STARTED.format(location=location, cell=cell))
                         db.rent_update_status_and_timer('Оренда', int(rent[4]) * 4, rent[0])
                         db.locker_status("Оренда", rent[3])
                     items = _my_rent_items(call.from_user.id)
                     keyboard = kb.my_rent_keyboard(items) if items else kb.user_menu
-                    await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
+                    station = db.get_station_by_id(locker[1]) if locker else None
+                    location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                    cell = locker[2] if locker else str(locker_id)
+                    await call.message.answer(MSG_LOCKER_OPENED.format(location=location, cell=cell), reply_markup=keyboard)
                     asyncio.create_task(delayed_switch_off(locker_id))
         else:
             await call.message.answer(MSG_RENT_NOT_ACTIVE)
@@ -1028,7 +1106,10 @@ async def f_adm_openLocker(call: CallbackQuery):
 
         keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
-        await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
+        station = db.get_station_by_id(locker[1]) if locker else None
+        location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+        cell = locker[2] if locker else str(locker_id)
+        await call.message.answer(MSG_LOCKER_OPENED.format(location=location, cell=cell), reply_markup=keyboard)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")

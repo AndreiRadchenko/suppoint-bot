@@ -6,7 +6,7 @@ from config_data.config import Config, load_config
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from services.payments import PaymentService, MonobankWebhookServer
 
-from helper.utilits_funk import timer, sync_station_activity, send_surcharge_reminders
+from helper.utilits_funk import timer, sync_station_activity, send_surcharge_reminders, refresh_my_rent_menus
 
 config: Config = load_config()
 
@@ -21,6 +21,7 @@ async def scheduler_funk():
     scheduler.add_job(timer, trigger="interval", seconds=15)
     scheduler.add_job(sync_station_activity, trigger="interval", seconds=30)
     scheduler.add_job(send_surcharge_reminders, trigger="interval", seconds=60)
+    scheduler.add_job(refresh_my_rent_menus, trigger="interval", seconds=300)
     # Запускаємо планувальник
     scheduler.start()
 

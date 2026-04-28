@@ -158,6 +158,29 @@ async def start_rent(callback: CallbackQuery, state: FSMContext):
     try:
         await bot.answer_callback_query(callback.id)
 
+        # --- ПЕРЕВІРКА НЕСПЛАЧЕНИХ ДОПЛАТ ---
+        unpaid = db.get_unpaid_surcharges_by_user(callback.from_user.id)
+        if unpaid:
+            lines = []
+            for sc in unpaid:
+                tx = db.get_topup_tx_by_surcharge_id(sc[0])
+                if tx and tx[11]:
+                    lines.append(f"• Оренда #{sc[6]}: <a href='{tx[11]}'>Оплатити доплату</a>")
+                else:
+                    lines.append(f"• Оренда #{sc[6]}: очікує обробки адміністратором")
+            links_text = "\n".join(lines)
+            await callback.message.answer(
+                f"🚫 <b>Нова оренда заблокована</b>\n\n"
+                f"У вас є несплачені доплати за попередні оренди. "
+                f"Будь ласка, сплатіть борг, щоб розпочати нову оренду.\n\n"
+                f"{links_text}",
+                reply_markup=kb.user_menu,
+                parse_mode='HTML',
+            )
+            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+            await state.clear()
+            return
+
         stations = db.get_visible_stations()
         if not stations:
             await callback.message.answer("🚫 Наразі немає доступних станцій.", reply_markup=kb.user_menu)
@@ -220,29 +243,6 @@ async def choose_station(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(station_id=station_id, selected_lockers=[])
 
-        # --- ПЕРЕВІРКА НЕСПЛАЧЕНИХ ДОПЛАТ ---
-        tg_id = callback.from_user.id
-        unpaid = db.get_unpaid_surcharges_by_user(tg_id)
-        if unpaid:
-            lines = []
-            for sc in unpaid:
-                tx = db.get_topup_tx_by_surcharge_id(sc[0])
-                if tx and tx[11]:
-                    lines.append(f"• Оренда #{sc[6]}: <a href='{tx[11]}'>Оплатити доплату</a>")
-                else:
-                    lines.append(f"• Оренда #{sc[6]}: очікує обробки адміністратором")
-            links_text = "\n".join(lines)
-            await callback.message.answer(
-                f"🚫 <b>Нова оренда заблокована</b>\n\n"
-                f"У вас є несплачені доплати за попередні оренди. "
-                f"Будь ласка, сплатіть борг, щоб розпочати нову оренду.\n\n"
-                f"{links_text}",
-                reply_markup=kb.user_menu,
-            )
-            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
-            await state.clear()
-            return
-
         await show_locker_selection(callback.message, state, station_id)
         # await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
@@ -293,6 +293,10 @@ async def done_selecting_cells(callback: CallbackQuery, state: FSMContext):
             await callback.answer("Оберіть хоча б одну комірку!", show_alert=True)
             return
 
+        # Clear selected_lockers immediately to prevent double-tap creating duplicate rents.
+        # Save confirmed list separately so choose_rent_time can still access it.
+        await state.update_data(selected_lockers=[], confirmed_lockers=selected)
+
         data = await state.get_data()
         station_id = data.get('station_id')
         for locker_id in selected:
@@ -341,7 +345,7 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
             await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
         else:
             time = int(callback.data.split("_")[1])
-            selected = data.get("selected_lockers", [])
+            selected = data.get("confirmed_lockers") or data.get("selected_lockers", [])
             station_id = data.get("station_id")
 
             if not selected:

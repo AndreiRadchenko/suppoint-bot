@@ -66,10 +66,10 @@ async def get_problem_file(message: Message, state: FSMContext):
 @router.callback_query(StateFilter(ReportProblem.waiting_for_file), F.data == "skip_file")
 async def skip_file(call: CallbackQuery, state: FSMContext):
     try:
+        await call.answer()
         data = await state.get_data()
         await call.message.edit_text(f"🔔 Ви описали проблему:\n\n{data['description']}\n\n(Без файлу)", reply_markup=kb.error_report_confirm_menu)
         await state.set_state(ReportProblem.confirm)
-        await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
@@ -77,6 +77,7 @@ async def skip_file(call: CallbackQuery, state: FSMContext):
 @router.callback_query(StateFilter(ReportProblem.confirm), F.data == "confirm_problem")
 async def confirm_problem(call: CallbackQuery, state: FSMContext):
     try:
+        await call.answer()
         data = await state.get_data()
 
         user = db.get_user_by_tg_id(call.from_user.id)
@@ -98,7 +99,6 @@ async def confirm_problem(call: CallbackQuery, state: FSMContext):
 
         await call.message.edit_text("✅ Ваше повідомлення про проблему надіслано. Дякуємо!", reply_markup=kb.user_menu)
         await state.clear()
-        await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
@@ -106,8 +106,8 @@ async def confirm_problem(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cancel_problem")
 async def cancel_problem(call: CallbackQuery, state: FSMContext):
     try:
+        await call.answer()
         await call.message.edit_text("❌ Повідомлення про проблему скасовано.", reply_markup=kb.user_menu)
         await state.clear()
-        await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")

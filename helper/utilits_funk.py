@@ -1,5 +1,6 @@
 from contextlib import suppress
 from datetime import datetime
+from math import ceil
 from zoneinfo import ZoneInfo
 
 from db import Database
@@ -11,10 +12,14 @@ from kb import kb
 from text.text import (
     MSG_RESERVATION_CANCELLED, MSG_RENT_STARTED,
     MSG_RENT_5_MIN_LEFT, MSG_RENT_TIME_EXPIRED,
+    MSG_SURCHARGE_REMINDER, MSG_MY_RENTS,
 )
 
 config: Config = load_config()
 db = Database(config.db.path)
+
+# Tracks users with an open my_rent menu: tg_id -> (chat_id, message_id)
+my_rent_open: dict[int, tuple[int, int]] = {}
 
 
 async def timer():
@@ -46,16 +51,28 @@ async def timer():
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Очікування відкриття':
                         if rent[13] == 1:
-                            await bot.send_message(rent[1], MSG_RENT_STARTED)
+                            locker = db.get_locker_by_locker_id(rent[3])
+                            station = db.get_station_by_id(locker[1]) if locker else None
+                            location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                            cell = locker[2] if locker else str(rent[3])
+                            await bot.send_message(rent[1], MSG_RENT_STARTED.format(location=location, cell=cell))
                             db.rent_update_status_and_timer('Оренда', int(rent[4])*4, rent[0])
                         else:
                             db.valid_until_down(rent[0])
                     elif rent[12] == 'Оренда':
                         if rent[13] == 20:
-                            await bot.send_message(rent[1], MSG_RENT_5_MIN_LEFT)
+                            locker = db.get_locker_by_locker_id(rent[3])
+                            station = db.get_station_by_id(locker[1]) if locker else None
+                            location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                            cell = locker[2] if locker else str(rent[3])
+                            await bot.send_message(rent[1], MSG_RENT_5_MIN_LEFT.format(location=location, cell=cell))
                             db.valid_until_down(rent[0])
                         elif rent[13] == 1:
-                            await bot.send_message(rent[1], MSG_RENT_TIME_EXPIRED,
+                            locker = db.get_locker_by_locker_id(rent[3])
+                            station = db.get_station_by_id(locker[1]) if locker else None
+                            location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                            cell = locker[2] if locker else str(rent[3])
+                            await bot.send_message(rent[1], MSG_RENT_TIME_EXPIRED.format(location=location, cell=cell),
                        reply_markup=kb.user_menu)
                             db.valid_until_down(rent[0])
                         else:
@@ -177,12 +194,7 @@ async def send_surcharge_reminders():
 
             elapsed_hours = (now - created_at).total_seconds() / 3600
 
-            reminder_text = (
-                f"💳 <b>Нагадування про несплачену доплату</b>\n\n"
-                f"У вас є несплачена доплата за оренду #{to_rent}.\n"
-                f"Будь ласка, сплатіть борг:\n"
-                f"<a href='{checkout_url}'>👉 Оплатити доплату</a>"
-            )
+            reminder_text = MSG_SURCHARGE_REMINDER.format(to_rent=to_rent, checkout_url=checkout_url)
 
             if elapsed_hours >= 1 and not reminder_1h_sent:
                 with suppress(Exception):
@@ -202,3 +214,66 @@ async def send_surcharge_reminders():
                     db.mark_daily_reminder(surcharge_id, today_str)
     except Exception as e:
         log_exception(e)
+
+
+async def refresh_my_rent_menus():
+    """Scheduler job: edit open my_rent menus with fresh overtime/surcharge info."""
+    if not my_rent_open:
+        return
+    for tg_id, (chat_id, message_id) in list(my_rent_open.items()):
+        try:
+            rents = db.get_all_my_rent(tg_id)
+            if not rents:
+                my_rent_open.pop(tg_id, None)
+                continue
+
+            # Build items list
+            items = []
+            for rent in rents:
+                locker = db.get_locker_by_locker_id(rent[3])
+                if locker:
+                    station = db.get_station_by_id(locker[1])
+                    station_label = (station[2] or "").strip() if station else f"Станція #{locker[1]}"
+                    items.append((rent[0], locker[2], station_label))
+
+            if not items:
+                my_rent_open.pop(tg_id, None)
+                continue
+
+            # Build overtime lines
+            overtime_lines = []
+            for rent in rents:
+                if rent[12] == 'Оренда' and rent[13] < 0:
+                    overtime_min = ceil(abs(rent[13]) * 15 / 60)
+                    locker = db.get_locker_by_locker_id(rent[3])
+                    locker_name = locker[2] if locker else f"#{rent[3]}"
+                    overtime_lines.append(
+                        f"⏰ Оренда #{rent[0]} ({locker_name}): перевищено на {overtime_min} хв"
+                    )
+
+            # Build surcharge reminder
+            surcharge_part = ""
+            surcharges = db.get_unpaid_surcharges_by_user(tg_id)
+            for sc in surcharges:
+                tx = db.get_topup_tx_by_surcharge_id(sc[0])
+                if tx and tx[11]:
+                    surcharge_part = MSG_SURCHARGE_REMINDER.format(
+                        to_rent=sc[6], checkout_url=tx[11]
+                    )
+                    break
+
+            parts = [MSG_MY_RENTS]
+            if overtime_lines:
+                parts.append("\n".join(overtime_lines))
+            if surcharge_part:
+                parts.append(surcharge_part)
+            text = "\n\n".join(parts)
+
+            keyboard = kb.my_rent_keyboard(items)
+            with suppress(Exception):
+                await bot.edit_message_text(
+                    text, chat_id=chat_id, message_id=message_id,
+                    reply_markup=keyboard, parse_mode='HTML'
+                )
+        except Exception as e:
+            log_exception(e)

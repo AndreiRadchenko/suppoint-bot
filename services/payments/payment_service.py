@@ -248,10 +248,11 @@ class PaymentService:
             return
 
         if normalized_status in {"failed", "expired"}:
-            await bot.send_message(
-                tx[2],
-                MSG_PAYMENT_FAILED,
-            )
+            if tx[1] == "initial":
+                await bot.send_message(
+                    tx[2],
+                    MSG_PAYMENT_FAILED,
+                )
 
     async def _mark_paid(self, tx, invoice_id: str, receipt_url: Optional[str]):
         payment_type = tx[1]
@@ -276,10 +277,22 @@ class PaymentService:
                 self.db.save_rent_payment_receipt(rent[0], invoice_id, receipt_url)
 
             await self._start_fiscalization(tx, invoice_id)
+
+            # Build my_rent keyboard for the confirmed rents
+            active_rents = self.db.get_all_my_rent(tg_id)
+            rent_items = []
+            for r in active_rents:
+                locker = self.db.get_locker_by_locker_id(r[3])
+                if locker:
+                    station = self.db.get_station_by_id(locker[1])
+                    station_label = (station[2] or "").strip() if station else f"Станція #{locker[1]}"
+                    rent_items.append((r[0], locker[2], station_label))
+            reply_keyboard = kb.my_rent_keyboard(rent_items) if rent_items else kb.user_menu
+
             await bot.send_message(
                 tg_id,
                 MSG_PAYMENT_CONFIRMED,
-                reply_markup=kb.user_menu,
+                reply_markup=reply_keyboard,
             )
             # asyncio.create_task(self._start_fiscalization(tx, invoice_id))
             # return

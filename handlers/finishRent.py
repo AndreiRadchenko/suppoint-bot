@@ -1,6 +1,7 @@
 import base64
 from contextlib import suppress
 from datetime import datetime
+from math import ceil
 
 from aiogram import Router, F, types
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -255,12 +256,12 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
 
                 total = int(base_time) + (int(perlimit) * -1 / 4)
 
-                total_time = round(total / 15) * 15
+                total_time = ceil(total / 15) * 15
 
-                if total_time > 240:
+                if total_time > 300:
+                    total_time = 480
+                elif total_time > 240:
                     total_time = 300
-                elif total_time > 300:
-                    total_time = 500
 
                 today = datetime.today()
                 week_day = today.weekday()

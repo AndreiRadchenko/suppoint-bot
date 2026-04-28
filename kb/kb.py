@@ -161,6 +161,7 @@ def my_rent_keyboard(items: list) -> InlineKeyboardMarkup:
             text=f"✅ Завершити оренду комірки {locker_name} ({station_label})",
             callback_data=f"finishRent:{rent_id}"
         )])
+    buttons.append([InlineKeyboardButton(text="🔄 Оновити", callback_data="refresh_my_rent")])
     buttons.append([InlineKeyboardButton(text="Назад", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
