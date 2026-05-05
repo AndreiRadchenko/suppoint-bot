@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InputMed
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from config_data.config import Config, load_config
-from helper.helper import log_exception, clear_messages
+from helper.helper import log_exception, clear_messages, is_shift_closed, shift_closed_msg
 from kb import kb
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -415,6 +415,11 @@ async def choose_rent_time(callback: CallbackQuery, state: FSMContext):
                     20,
                     'Резервація',
                 )
+
+            if is_shift_closed():
+                await callback.message.answer(shift_closed_msg(), parse_mode='HTML', reply_markup=kb.user_menu)
+                await state.clear()
+                return
 
             if station_location:
                 destination = f"Оренда спорядження. Станція: {station_name} ({station_location}). Тривалість {time} хв"

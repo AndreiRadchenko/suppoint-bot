@@ -12,7 +12,7 @@ from kb import kb
 from text.text import (
     MSG_RESERVATION_CANCELLED, MSG_RENT_STARTED,
     MSG_RENT_5_MIN_LEFT, MSG_RENT_TIME_EXPIRED,
-    MSG_SURCHARGE_REMINDER, MSG_MY_RENTS,
+    MSG_SURCHARGE_REMINDER, MSG_MY_RENTS, format_rent_status_line,
 )
 
 config: Config = load_config()
@@ -240,16 +240,16 @@ async def refresh_my_rent_menus():
                 my_rent_open.pop(tg_id, None)
                 continue
 
-            # Build overtime lines
-            overtime_lines = []
+            # Build per-rent status lines
+            status_lines = []
             for rent in rents:
-                if rent[12] == 'Оренда' and rent[13] < 0:
-                    overtime_min = ceil(abs(rent[13]) * 15 / 60)
-                    locker = db.get_locker_by_locker_id(rent[3])
-                    locker_name = locker[2] if locker else f"#{rent[3]}"
-                    overtime_lines.append(
-                        f"⏰ Оренда #{rent[0]} ({locker_name}): перевищено на {overtime_min} хв"
-                    )
+                locker = db.get_locker_by_locker_id(rent[3])
+                locker_name = locker[2] if locker else f"#{rent[3]}"
+                station = db.get_station_by_id(locker[1]) if locker else None
+                station_label = (station[2] or "").strip() if station else f"#{rent[2]}"
+                line = format_rent_status_line(rent[12], rent[13], locker_name, station_label)
+                if line:
+                    status_lines.append(line)
 
             # Build surcharge reminder
             surcharge_part = ""
@@ -263,8 +263,8 @@ async def refresh_my_rent_menus():
                     break
 
             parts = [MSG_MY_RENTS]
-            if overtime_lines:
-                parts.append("\n".join(overtime_lines))
+            if status_lines:
+                parts.append("\n".join(status_lines))
             if surcharge_part:
                 parts.append(surcharge_part)
             text = "\n\n".join(parts)

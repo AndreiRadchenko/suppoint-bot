@@ -1,7 +1,10 @@
 from dataclasses import dataclass
+from datetime import time as dtime
 from environs import Env
 
-
+# --- Shift schedule ---
+SHIFT_CLOSE_START = dtime(23, 45)
+SHIFT_CLOSE_END = dtime(00, 00)
 @dataclass
 class TgBot:
     token: str

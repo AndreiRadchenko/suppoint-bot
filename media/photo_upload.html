@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Фото комплекту</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 24px;
+        }
+        .card {
+            text-align: center;
+            width: 100%;
+            max-width: 380px;
+        }
+        .icon { font-size: 48px; margin-bottom: 12px; }
+        h2 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+        .hint {
+            font-size: 14px;
+            color: var(--tg-theme-hint-color, #888888);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+        .btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 15px;
+            background: var(--tg-theme-button-color, #0088cc);
+            color: var(--tg-theme-button-text-color, #ffffff);
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .btn:disabled { opacity: 0.55; cursor: default; }
+        #status {
+            margin-top: 18px;
+            font-size: 15px;
+            min-height: 22px;
+            line-height: 1.5;
+        }
+        .success { color: #2d9e5f; }
+        .error   { color: #e53935; }
+        .spinner { display: inline-block; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="icon">📸</div>
+    <h2>Фото комплекту</h2>
+    <p class="hint">Зробіть фото спорядження в комірці перед закриттям дверцят</p>
+    <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none">
+    <button class="btn" id="pick-btn">
+        📷 Сфотографувати
+    </button>
+    <div id="status"></div>
+</div>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    const params = new URLSearchParams(window.location.search);
+    const rentId = params.get('rent_id') || '';
+
+    const pickBtn = document.getElementById('pick-btn');
+    const input   = document.getElementById('photo-input');
+    const status  = document.getElementById('status');
+
+    pickBtn.addEventListener('click', () => input.click());
+
+    input.addEventListener('change', async () => {
+        const file = input.files[0];
+        if (!file) return;
+
+        pickBtn.disabled = true;
+        status.className = '';
+        status.innerHTML = '<span class="spinner">⏳</span> Завантаження...';
+
+        const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+        if (file.size > MAX_SIZE) {
+            status.textContent = '❌ Файл завеликий (максимум 10 МБ)';
+            status.className = 'error';
+            pickBtn.disabled = false;
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('photo', file, file.name || 'photo.jpg');
+        formData.append('rent_id', rentId);
+        formData.append('init_data', tg.initData);
+
+        try {
+            const resp = await fetch('/api/upload-rent-photo', {
+                method: 'POST',
+                body: formData,
+            });
+            const result = await resp.json();
+            if (result.ok) {
+                status.textContent = '✅ Фото надіслано!';
+                status.className = 'success';
+                setTimeout(() => tg.close(), 1200);
+            } else {
+                status.textContent = '❌ ' + (result.error || 'Помилка');
+                status.className = 'error';
+                pickBtn.disabled = false;
+            }
+        } catch (err) {
+            status.textContent = "❌ Помилка з'єднання";
+            status.className = 'error';
+            pickBtn.disabled = false;
+        }
+    });
+</script>
+</body>
+</html>

@@ -22,6 +22,8 @@ async def scheduler_funk():
     scheduler.add_job(sync_station_activity, trigger="interval", seconds=30)
     scheduler.add_job(send_surcharge_reminders, trigger="interval", seconds=60)
     scheduler.add_job(refresh_my_rent_menus, trigger="interval", seconds=300)
+    scheduler.add_job(payment_service.reconcile_pending_transactions, trigger="interval", seconds=120)
+    scheduler.add_job(payment_service.reconcile_fiscal_transactions, trigger="interval", seconds=180)
     # Запускаємо планувальник
     scheduler.start()
 

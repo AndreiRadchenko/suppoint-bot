@@ -744,25 +744,36 @@ class Database:
         except sqlite3.Error as e:
             print("Помилка save_link_message_id:", e)
 
-    def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None, invoice_url=None):
+    def update_payment_transaction_status(self, invoice_id, status, receipt_url=None, raw_payload=None, invoice_url=None) -> bool:
+        """Update transaction status. Returns True if the row was actually updated (not already finalized)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 now = datetime.utcnow().isoformat()
                 paid_at = now if status == 'success' else None
+                # Guard: never overwrite a finalized status — prevents double processing
+                # when webhook and reconcile both see the row before either commits.
+                where_clause = (
+                    "WHERE external_invoice_id = ? "
+                    "AND status NOT IN ('success', 'failed', 'expired')"
+                    if status in ('success', 'failed', 'expired')
+                    else "WHERE external_invoice_id = ?"
+                )
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE payment_transactions
                     SET status = ?, receipt_url = COALESCE(?, receipt_url), raw_payload = ?,
                         paid_at = COALESCE(?, paid_at), updated_at = ?,
                         invoice_url = COALESCE(?, invoice_url)
-                    WHERE external_invoice_id = ?
+                    {where_clause}
                     """,
                     (status, receipt_url, raw_payload, paid_at, now, invoice_url, invoice_id)
                 )
                 conn.commit()
+                return cursor.rowcount > 0
         except sqlite3.Error as e:
             print("Помилка update_payment_transaction_status:", e)
+            return False
 
     def update_payment_transaction_fiscal(
         self,
@@ -923,6 +934,18 @@ class Database:
         except sqlite3.Error as e:
             print("Помилка в get_tariff_by_data:", e)
             return []
+
+    def get_max_tariff(self, tariff_type, day_type):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                return cursor.execute(
+                    "SELECT * FROM tariffs WHERE tariff_type = ? AND day_type = ? ORDER BY duration_min DESC LIMIT 1",
+                    (tariff_type, day_type)
+                ).fetchone()
+        except sqlite3.Error as e:
+            print("Помилка в get_max_tariff:", e)
+            return None
 
     def locker_update_status_and_timer(self, status, timer, locker_id):
         try:

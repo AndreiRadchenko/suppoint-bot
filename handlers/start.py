@@ -4,7 +4,7 @@ from aiogram.fsm.state import default_state
 from create_bot import bot
 from text.text import (
     MSG_ADMIN_WELCOME, MSG_REGISTER_PROMPT, MSG_USER_WELCOME,
-    MSG_RENT_STARTED, MSG_MY_RENTS, MSG_SURCHARGE_REMINDER,
+    MSG_RENT_STARTED, MSG_MY_RENTS, MSG_SURCHARGE_REMINDER, format_rent_status_line, format_minutes_hhmm,
     MSG_SERVICES_INFO, MSG_PRE_REG_INFO, MSG_PRE_REG_PRICE,
     MSG_AUTO_PAYMENT_NOTE, MSG_NO_OPEN_PROBLEMS, MSG_NO_NEW_SURCHARGES,
     MSG_MANUAL_REJECT_DISABLED, MSG_MANUAL_RESEND_DISABLED, MSG_MANUAL_CONFIRM_DISABLED,
@@ -71,17 +71,18 @@ def _my_rent_items(tg_id: int) -> list:
     return items
 
 
-def _overtime_text(tg_id: int) -> str:
-    """Return a text block describing overtimed rents, or empty string if none."""
+def _rent_status_lines(tg_id: int) -> list:
+    """Return per-rent status lines: location, cell, time remaining or overtime."""
     rents = db.get_all_my_rent(tg_id)
     lines = []
     for rent in rents:
-        if rent[12] == 'Оренда' and rent[13] < 0:
-            overtime_min = ceil(abs(rent[13]) * 15 / 60)
-            locker = db.get_locker_by_locker_id(rent[3])
-            locker_name = locker[2] if locker else f"#{rent[3]}"
-            lines.append(f"⏰ Оренда #{rent[0]} ({locker_name}): перевищено на {overtime_min} хв")
-    return "\n".join(lines)
+        locker = db.get_locker_by_locker_id(rent[3])
+        locker_name = locker[2] if locker else f"#{rent[3]}"
+        station_label = _station_label(locker[1]) if locker else f"#{rent[2]}"
+        line = format_rent_status_line(rent[12], rent[13], locker_name, station_label)
+        if line:
+            lines.append(line)
+    return lines
 
 
 def _get_surcharge_info(tg_id: int):
@@ -95,11 +96,11 @@ def _get_surcharge_info(tg_id: int):
 
 
 def _build_my_rent_text(tg_id: int) -> str:
-    """Build the full text for the my_rent message including overtime and surcharge info."""
+    """Build the full text for the my_rent message including rent status and surcharge info."""
     parts = [MSG_MY_RENTS]
-    overtime = _overtime_text(tg_id)
-    if overtime:
-        parts.append(overtime)
+    status_lines = _rent_status_lines(tg_id)
+    if status_lines:
+        parts.append("\n".join(status_lines))
     surcharge_info = _get_surcharge_info(tg_id)
     if surcharge_info:
         to_rent, checkout_url = surcharge_info
@@ -944,6 +945,11 @@ def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=(3, 5))
         return response.status_code == 200
+    except requests.exceptions.ReadTimeout:
+        # HA accepted the command but the response took too long.
+        # The switch state change was almost certainly applied — treat as success.
+        logging.warning("HA read timeout for %s/%s — assuming command was applied", state, entity_id)
+        return True
     except requests.RequestException as e:
         print(f"🚨 HA request error: {e}")
         return False
@@ -1210,9 +1216,9 @@ async def about_actual_rent(call: CallbackQuery):
 
         rent_time = ''
         if rent[13] < 0:
-            rent_time = f"Час оренди перевищено на {int(round(int(rent[13]) * -1 * 15 / 60))}хв"
+            rent_time = f"Час оренди перевищено на {format_minutes_hhmm(int(round(int(rent[13]) * -1 * 15 / 60)))}"
         else:
-            rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
+            rent_time = f"До кінця оренди залишилось {format_minutes_hhmm(int(round(int(rent[13]) * 15 / 60)))}"
 
         _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
         buttons = []
@@ -1231,11 +1237,11 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"Створено: {rent[11]}\n" \
                                  f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
-                                 f"Час оренди: {rent[4]}хв\n" \
+                                 f"Час оренди: {format_minutes_hhmm(rent[4])}\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
                                  f"Доплата: {rent[7]}грн | {rent[8]}\n" \
                                  f"{rent_time}\n" \
-                                 f"Весь час (доступно при доплаті) {rent[14]}хв"
+                                 f"Весь час (доступно при доплаті) {format_minutes_hhmm(rent[14])}"
 
         dock_array = []
         if rent:
@@ -1436,9 +1442,9 @@ async def about_actual_rent(call: CallbackQuery):
 
         rent_time = ''
         if rent[13] < 0:
-            rent_time = f"Час оренди перевищено на {int(round(int(rent[13]) * -1 * 15 / 60))}хв"
+            rent_time = f"Час оренди перевищено на {format_minutes_hhmm(int(round(int(rent[13]) * -1 * 15 / 60)))}"
         else:
-            rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
+            rent_time = f"До кінця оренди залишилось {format_minutes_hhmm(int(round(int(rent[13]) * 15 / 60)))}"
 
         buttons = []
         if rent[8] == 'NOT':
@@ -1454,11 +1460,11 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"Створено: {rent[11]}\n" \
                                  f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
-                                 f"Час оренди: {rent[4]}хв\n" \
+                                 f"Час оренди: {format_minutes_hhmm(rent[4])}\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
                                  f"Доплата: {rent[7]}грн | {rent[8]}\n" \
                                  f"{rent_time}\n" \
-                                 f"Весь час (доступно при доплаті) {rent[14]}хв"
+                                 f"Весь час (доступно при доплаті) {format_minutes_hhmm(rent[14])}"
 
         dock_array = []
         if rent:
