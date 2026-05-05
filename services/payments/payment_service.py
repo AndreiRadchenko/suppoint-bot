@@ -12,13 +12,14 @@ from zoneinfo import ZoneInfo
 from ecdsa import BadSignatureError, VerifyingKey
 from ecdsa.util import sigdecode_der
 
-from config_data.config import Config, load_config
-from text.text import MSG_PAYMENT_FAILED, MSG_PAYMENT_CONFIRMED, MSG_TOPUP_CONFIRMED
+from config_data.config import Config, load_config, SHIFT_CLOSE_START, SHIFT_CLOSE_END
+from text.text import MSG_PAYMENT_FAILED, MSG_PAYMENT_CONFIRMED, MSG_TOPUP_CONFIRMED, MSG_FISCAL_DEFERRED, format_minutes_hhmm, format_rent_status_line
 from create_bot import bot
 from db import Database
 from kb import kb
 from .checkbox_client import CheckboxClient, FiscalResult
 from .monobank_client import MonobankClient
+from helper.helper import is_shift_closed
 
 
 STATUS_MAP = {
@@ -218,9 +219,18 @@ class PaymentService:
         normalized_status = STATUS_MAP.get(mono_status, "pending")
         existing_status = tx[13]
 
-        # Idempotency: if already finalized, ignore duplicates.
-        if existing_status in {"success", "failed", "expired"}:
+        # Idempotency: block true duplicates only.
+        # "expired" is always terminal.
+        # "success" cannot be overridden by anything.
+        # "failed" CAN be overridden by a later "success" — Monobank may send failure
+        # for a declined attempt and then success when the user retries the same invoice.
+        if existing_status == "expired":
             return
+        if existing_status == "success" and normalized_status != "success":
+            return
+        if existing_status == "success" and normalized_status == "success":
+            # True duplicate success — idempotency handled below via `updated` flag.
+            pass
 
         invoice_url = payload.get("invoiceUrl") or (tx[18] if len(tx) > 18 else tx[11])
         receipt_url = payload.get("receiptUrl") or tx[12]
@@ -230,7 +240,7 @@ class PaymentService:
             invoice_url = status_invoice_url or invoice_url
             receipt_url = status_receipt_url or receipt_url
 
-        self.db.update_payment_transaction_status(
+        updated = self.db.update_payment_transaction_status(
             invoice_id=invoice_id,
             status=normalized_status,
             receipt_url=receipt_url,
@@ -239,6 +249,10 @@ class PaymentService:
         )
 
         if normalized_status == "success":
+            if not updated:
+                # Another coroutine (webhook / reconcile) already finalized this invoice.
+                logging.info("Duplicate success event for invoice %s — skipping _mark_paid", invoice_id)
+                return
             if not receipt_url:
                 logging.info(
                     "Monobank success without receipt URL for invoice %s; saved invoice_url only",
@@ -248,10 +262,11 @@ class PaymentService:
             return
 
         if normalized_status in {"failed", "expired"}:
-            await bot.send_message(
-                tx[2],
-                MSG_PAYMENT_FAILED,
-            )
+            if tx[1] == "initial":
+                await bot.send_message(
+                    tx[2],
+                    MSG_PAYMENT_FAILED,
+                )
 
     async def _mark_paid(self, tx, invoice_id: str, receipt_url: Optional[str]):
         payment_type = tx[1]
@@ -276,10 +291,35 @@ class PaymentService:
                 self.db.save_rent_payment_receipt(rent[0], invoice_id, receipt_url)
 
             await self._start_fiscalization(tx, invoice_id)
+
+            # Build my_rent keyboard for the confirmed rents
+            active_rents = self.db.get_all_my_rent(tg_id)
+            rent_items = []
+            for r in active_rents:
+                locker = self.db.get_locker_by_locker_id(r[3])
+                if locker:
+                    station = self.db.get_station_by_id(locker[1])
+                    station_label = (station[2] or "").strip() if station else f"Станція #{locker[1]}"
+                    rent_items.append((r[0], locker[2], station_label))
+            reply_keyboard = kb.my_rent_keyboard(rent_items) if rent_items else kb.user_menu
+
+            status_lines = []
+            for r in active_rents:
+                locker = self.db.get_locker_by_locker_id(r[3])
+                if locker:
+                    station = self.db.get_station_by_id(locker[1])
+                    station_label = (station[2] or "").strip() if station else f"Станція #{locker[1]}"
+                    line = format_rent_status_line(r[12], r[13], locker[2], station_label)
+                    if line:
+                        status_lines.append(line)
+            confirm_text = MSG_PAYMENT_CONFIRMED
+            if status_lines:
+                confirm_text = MSG_PAYMENT_CONFIRMED + "\n" + "\n".join(status_lines)
+
             await bot.send_message(
                 tg_id,
-                MSG_PAYMENT_CONFIRMED,
-                reply_markup=kb.user_menu,
+                confirm_text,
+                reply_markup=reply_keyboard,
             )
             # asyncio.create_task(self._start_fiscalization(tx, invoice_id))
             # return
@@ -348,7 +388,7 @@ class PaymentService:
                     total_time = int(rent[14]) if rent[14] is not None else 0
                     overtime = total_time - base_time
                     if overtime > 0:
-                        duration_str = f". Додатковий час {overtime} хв"
+                        duration_str = f". Додатковий час {format_minutes_hhmm(overtime)}"
                 except (TypeError, ValueError):
                     pass
             item_name = f"Доплата за оренду спорядження. Станція: {station_label}{duration_str}"
@@ -359,7 +399,7 @@ class PaymentService:
                 try:
                     base_time = int(rent[4])
                     if base_time > 0:
-                        duration_str = f". Тривалість {base_time} хв"
+                        duration_str = f". Тривалість {format_minutes_hhmm(base_time)}"
                 except (TypeError, ValueError):
                     pass
             item_name = f"Оренда спорядження. Станція: {station_label}{duration_str}"
@@ -403,10 +443,6 @@ class PaymentService:
                     "label": "Інтернет еквайринг",
                 }
             ],
-            "context": {
-                "invoice_id": invoice_id,
-                "reference": reference,
-            },
         }
 
     async def _send_receipt_email_if_configured(self, invoice_id: str) -> None:
@@ -453,6 +489,26 @@ class PaymentService:
         if len(tx) > 19 and tx[19] in {"success", "failed"}:
             return
 
+        # During maintenance window: defer fiscalization, notify user, let reconcile handle it later.
+        if is_shift_closed():
+            already_deferred = (
+                len(tx) > 22
+                and (tx[22] or "").startswith("Deferred:")
+            )
+            self.db.update_payment_transaction_fiscal(
+                invoice_id=invoice_id,
+                fiscal_status="processing",
+                fiscal_provider="checkbox",
+                fiscal_error="Deferred: maintenance window active",
+            )
+            if not already_deferred:
+                await bot.send_message(
+                    tx[2],
+                    MSG_FISCAL_DEFERRED.format(end=SHIFT_CLOSE_END.strftime('%H:%M')),
+                    parse_mode="HTML",
+                )
+            return
+
         self.db.update_payment_transaction_fiscal(
             invoice_id=invoice_id,
             fiscal_status="pending",
@@ -491,6 +547,11 @@ class PaymentService:
                 )
                 return
 
+            logging.warning(
+                "Checkbox non-retryable fiscal error for %s: %s",
+                invoice_id,
+                result.error_text,
+            )
             self.db.update_payment_transaction_fiscal(
                 invoice_id=invoice_id,
                 fiscal_status="failed",
@@ -619,9 +680,10 @@ class PaymentService:
 
         now_hhmm = now_local.strftime("%H:%M")
         today_key = now_local.strftime("%Y-%m-%d")
+        close_at = SHIFT_CLOSE_START.strftime("%H:%M")
 
-        # Checkbox shift must be closed during the same day; auto-close by 23:45.
-        if now_hhmm >= "23:45" and self._last_shift_close_date != today_key:
+        # Auto-close Checkbox shift at SHIFT_CLOSE_START each day.
+        if now_hhmm >= close_at and self._last_shift_close_date != today_key:
             closed = await self.checkbox_client.close_shift()
             if closed:
                 self._last_shift_close_date = today_key

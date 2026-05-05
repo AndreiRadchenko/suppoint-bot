@@ -4,7 +4,7 @@ from aiogram.fsm.state import default_state
 from create_bot import bot
 from text.text import (
     MSG_ADMIN_WELCOME, MSG_REGISTER_PROMPT, MSG_USER_WELCOME,
-    MSG_RENT_STARTED, MSG_MY_RENTS,
+    MSG_RENT_STARTED, MSG_MY_RENTS, MSG_SURCHARGE_REMINDER, format_rent_status_line, format_minutes_hhmm,
     MSG_SERVICES_INFO, MSG_PRE_REG_INFO, MSG_PRE_REG_PRICE,
     MSG_AUTO_PAYMENT_NOTE, MSG_NO_OPEN_PROBLEMS, MSG_NO_NEW_SURCHARGES,
     MSG_MANUAL_REJECT_DISABLED, MSG_MANUAL_RESEND_DISABLED, MSG_MANUAL_CONFIRM_DISABLED,
@@ -36,6 +36,7 @@ from aiogram.types import BotCommand
 from datetime import datetime
 from math import ceil
 from aiogram.types.input_file import FSInputFile
+from helper.utilits_funk import my_rent_open
 
 config: Config = load_config()
 db = Database(config.db.path)
@@ -68,6 +69,44 @@ def _my_rent_items(tg_id: int) -> list:
         if my_locker:
             items.append((rent[0], my_locker[2], _station_label(my_locker[1])))
     return items
+
+
+def _rent_status_lines(tg_id: int) -> list:
+    """Return per-rent status lines: location, cell, time remaining or overtime."""
+    rents = db.get_all_my_rent(tg_id)
+    lines = []
+    for rent in rents:
+        locker = db.get_locker_by_locker_id(rent[3])
+        locker_name = locker[2] if locker else f"#{rent[3]}"
+        station_label = _station_label(locker[1]) if locker else f"#{rent[2]}"
+        line = format_rent_status_line(rent[12], rent[13], locker_name, station_label)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _get_surcharge_info(tg_id: int):
+    """Return (to_rent, checkout_url) for the first unpaid surcharge with an active payment link, or None."""
+    surcharges = db.get_unpaid_surcharges_by_user(tg_id)
+    for sc in surcharges:
+        tx = db.get_topup_tx_by_surcharge_id(sc[0])
+        if tx and tx[11]:
+            return (sc[6], tx[11])
+    return None
+
+
+def _build_my_rent_text(tg_id: int) -> str:
+    """Build the full text for the my_rent message including rent status and surcharge info."""
+    parts = [MSG_MY_RENTS]
+    status_lines = _rent_status_lines(tg_id)
+    if status_lines:
+        parts.append("\n".join(status_lines))
+    surcharge_info = _get_surcharge_info(tg_id)
+    if surcharge_info:
+        to_rent, checkout_url = surcharge_info
+        parts.append(MSG_SURCHARGE_REMINDER.format(to_rent=to_rent, checkout_url=checkout_url))
+    return "\n\n".join(parts)
+
 
 @router.message(Command("start"))
 async def start(message: Message):
@@ -268,13 +307,46 @@ async def my_rent(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
 
-        items = _my_rent_items(callback.from_user.id)
+        tg_id = callback.from_user.id
+        items = _my_rent_items(tg_id)
+        surcharge_info = _get_surcharge_info(tg_id)
         if items:
             keyboard = kb.my_rent_keyboard(items)
-            await bot.send_message(callback.from_user.id, MSG_MY_RENTS, reply_markup=keyboard)
+            text = _build_my_rent_text(tg_id)
+            sent = await bot.send_message(tg_id, text, reply_markup=keyboard, parse_mode='HTML')
+            my_rent_open[tg_id] = (callback.message.chat.id, sent.message_id)
+        elif surcharge_info:
+            to_rent, checkout_url = surcharge_info
+            text = MSG_SURCHARGE_REMINDER.format(to_rent=to_rent, checkout_url=checkout_url)
+            await bot.send_message(tg_id, text, reply_markup=kb.user_menu, parse_mode='HTML')
+            my_rent_open.pop(tg_id, None)
         else:
             await callback.message.answer(MSG_NO_ACTIVE_RENTS, reply_markup=kb.user_menu)
+            my_rent_open.pop(tg_id, None)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
+    except Exception as e:
+        print(f"🚨 Загальна помилка: {e}")
+
+
+@router.callback_query(F.data == "refresh_my_rent")
+async def refresh_my_rent(callback: CallbackQuery):
+    try:
+        await bot.answer_callback_query(callback.id)
+        tg_id = callback.from_user.id
+        items = _my_rent_items(tg_id)
+        if items:
+            keyboard = kb.my_rent_keyboard(items)
+            text = _build_my_rent_text(tg_id)
+            await bot.edit_message_text(
+                text, chat_id=callback.message.chat.id,
+                message_id=callback.message.message_id,
+                reply_markup=keyboard, parse_mode='HTML'
+            )
+            my_rent_open[tg_id] = (callback.message.chat.id, callback.message.message_id)
+        else:
+            my_rent_open.pop(tg_id, None)
+            await callback.message.answer(MSG_NO_ACTIVE_RENTS, reply_markup=kb.user_menu)
+            await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
 
@@ -644,6 +716,7 @@ async def back_to_main_menu(callback: CallbackQuery):
     try:
         await bot.answer_callback_query(callback.id)
         tg_id = callback.from_user.id
+        my_rent_open.pop(tg_id, None)
         user_exist = db.user_exists(tg_id)
         if tg_id in config.tg_bot.admin_ids:
             await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
@@ -682,12 +755,18 @@ async def openLocker(call: CallbackQuery):
                         return
 
                     if rent[12] == 'Очікування відкриття':
-                        await bot.send_message(rent[1], MSG_RENT_STARTED)
+                        station = db.get_station_by_id(locker[1]) if locker else None
+                        location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                        cell = locker[2] if locker else str(locker_id)
+                        await bot.send_message(rent[1], MSG_RENT_STARTED.format(location=location, cell=cell))
                         db.rent_update_status_and_timer('Оренда', int(rent[4]) * 4, rent[0])
                         db.locker_status("Оренда", rent[3])
                     items = _my_rent_items(call.from_user.id)
                     keyboard = kb.my_rent_keyboard(items) if items else kb.user_menu
-                    await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
+                    station = db.get_station_by_id(locker[1]) if locker else None
+                    location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+                    cell = locker[2] if locker else str(locker_id)
+                    await call.message.answer(MSG_LOCKER_OPENED.format(location=location, cell=cell), reply_markup=keyboard)
                     asyncio.create_task(delayed_switch_off(locker_id))
         else:
             await call.message.answer(MSG_RENT_NOT_ACTIVE)
@@ -866,6 +945,11 @@ def toggle_switch(state: str, hass_url: str, token: str, entity_id: str) -> bool
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=(3, 5))
         return response.status_code == 200
+    except requests.exceptions.ReadTimeout:
+        # HA accepted the command but the response took too long.
+        # The switch state change was almost certainly applied — treat as success.
+        logging.warning("HA read timeout for %s/%s — assuming command was applied", state, entity_id)
+        return True
     except requests.RequestException as e:
         print(f"🚨 HA request error: {e}")
         return False
@@ -1028,7 +1112,10 @@ async def f_adm_openLocker(call: CallbackQuery):
 
         keyboard = kb.f_locker_action_keyboard(locker_id, locker[1])
 
-        await call.message.answer(MSG_LOCKER_OPENED, reply_markup=keyboard)
+        station = db.get_station_by_id(locker[1]) if locker else None
+        location = (station[2] or "").strip() if station else f"Станція #{locker[1] if locker else '?'}"
+        cell = locker[2] if locker else str(locker_id)
+        await call.message.answer(MSG_LOCKER_OPENED.format(location=location, cell=cell), reply_markup=keyboard)
         await clear_messages(call.message.chat.id, call.message.message_id, 15)
     except Exception as e:
         print(f"🚨 Загальна помилка: {e}")
@@ -1129,9 +1216,9 @@ async def about_actual_rent(call: CallbackQuery):
 
         rent_time = ''
         if rent[13] < 0:
-            rent_time = f"Час оренди перевищено на {int(round(int(rent[13]) * -1 * 15 / 60))}хв"
+            rent_time = f"Час оренди перевищено на {format_minutes_hhmm(int(round(int(rent[13]) * -1 * 15 / 60)))}"
         else:
-            rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
+            rent_time = f"До кінця оренди залишилось {format_minutes_hhmm(int(round(int(rent[13]) * 15 / 60)))}"
 
         _active_statuses = {'Резервація', 'Очікує оплату', 'Очікування відкриття', 'Оренда', 'Очікує доплату', 'Повторний запит'}
         buttons = []
@@ -1150,11 +1237,11 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"Створено: {rent[11]}\n" \
                                  f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
-                                 f"Час оренди: {rent[4]}хв\n" \
+                                 f"Час оренди: {format_minutes_hhmm(rent[4])}\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
                                  f"Доплата: {rent[7]}грн | {rent[8]}\n" \
                                  f"{rent_time}\n" \
-                                 f"Весь час (доступно при доплаті) {rent[14]}хв"
+                                 f"Весь час (доступно при доплаті) {format_minutes_hhmm(rent[14])}"
 
         dock_array = []
         if rent:
@@ -1355,9 +1442,9 @@ async def about_actual_rent(call: CallbackQuery):
 
         rent_time = ''
         if rent[13] < 0:
-            rent_time = f"Час оренди перевищено на {int(round(int(rent[13]) * -1 * 15 / 60))}хв"
+            rent_time = f"Час оренди перевищено на {format_minutes_hhmm(int(round(int(rent[13]) * -1 * 15 / 60)))}"
         else:
-            rent_time = f"До кінця оренди залишилось {int(round(int(rent[13]) * 15 / 60))}хв"
+            rent_time = f"До кінця оренди залишилось {format_minutes_hhmm(int(round(int(rent[13]) * 15 / 60)))}"
 
         buttons = []
         if rent[8] == 'NOT':
@@ -1373,11 +1460,11 @@ async def about_actual_rent(call: CallbackQuery):
                                  f"Створено: {rent[11]}\n" \
                                  f"Комірка: {locker[2]} ({_station_label(locker[1])}) | {locker[3]}\n" \
                                  f"Статус: {rent[12]}\n" \
-                                 f"Час оренди: {rent[4]}хв\n" \
+                                 f"Час оренди: {format_minutes_hhmm(rent[4])}\n" \
                                  f"Передоплата: {rent[5]}грн | {rent[6]}\n" \
                                  f"Доплата: {rent[7]}грн | {rent[8]}\n" \
                                  f"{rent_time}\n" \
-                                 f"Весь час (доступно при доплаті) {rent[14]}хв"
+                                 f"Весь час (доступно при доплаті) {format_minutes_hhmm(rent[14])}"
 
         dock_array = []
         if rent:

@@ -1,9 +1,35 @@
 from create_bot import bot
 import logging
 import asyncio
-from config_data.config import Config, load_config
+from zoneinfo import ZoneInfo
+from datetime import datetime
+from config_data.config import Config, load_config, SHIFT_CLOSE_START, SHIFT_CLOSE_END
+from text.text import MSG_SHIFT_CLOSED
 import aiohttp
 config: Config = load_config()
+
+
+def is_shift_closed() -> bool:
+    """Return True when current Kyiv time falls within the configured maintenance window.
+
+    Handles both same-day (start < end) and overnight (start > end) windows.
+    When start == end the window is treated as never closed.
+    """
+    now = datetime.now(ZoneInfo('Europe/Kyiv')).time().replace(second=0, microsecond=0)
+    if SHIFT_CLOSE_START == SHIFT_CLOSE_END:
+        return False
+    if SHIFT_CLOSE_END > SHIFT_CLOSE_START:  # same-day window, e.g. 02:00 – 06:00
+        return SHIFT_CLOSE_START <= now < SHIFT_CLOSE_END
+    # overnight window, e.g. 23:45 – 01:00 (or 23:45 – 00:00)
+    return now >= SHIFT_CLOSE_START or now < SHIFT_CLOSE_END
+
+
+def shift_closed_msg() -> str:
+    """Return the localised maintenance message with actual configured times."""
+    return MSG_SHIFT_CLOSED.format(
+        start=SHIFT_CLOSE_START.strftime('%H:%M'),
+        end=SHIFT_CLOSE_END.strftime('%H:%M'),
+    )
 
 
 def log_exception(e):

@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 
 btn1 = InlineKeyboardButton(text="🏄‍♂️ Орендувати", callback_data="rent")
@@ -161,6 +161,7 @@ def my_rent_keyboard(items: list) -> InlineKeyboardMarkup:
             text=f"✅ Завершити оренду комірки {locker_name} ({station_label})",
             callback_data=f"finishRent:{rent_id}"
         )])
+    buttons.append([InlineKeyboardButton(text="🔄 Оновити", callback_data="refresh_my_rent")])
     buttons.append([InlineKeyboardButton(text="Назад", callback_data="back_to_main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -235,9 +236,13 @@ error_report_skip_menu = InlineKeyboardMarkup(inline_keyboard=[
 
 # --- Finish rent ---
 
-finish_rent_cancel_menu = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")],
-])
+def finish_rent_cancel_menu(rent_id, web_app_base_url: str = "") -> InlineKeyboardMarkup:
+    buttons = []
+    if web_app_base_url:
+        url = f"{web_app_base_url.rstrip('/')}/rent-photo?rent_id={rent_id}"
+        buttons.append([InlineKeyboardButton(text="📷 Надіслати фото", web_app=WebAppInfo(url=url))])
+    buttons.append([InlineKeyboardButton(text="❌ Скасувати", callback_data="finish_rent_cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 rent_finish_confirm_menu = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🔒 Кінець оренди", callback_data="confirm_rent_finish")],

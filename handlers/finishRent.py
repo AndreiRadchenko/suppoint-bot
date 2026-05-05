@@ -1,6 +1,7 @@
 import base64
 from contextlib import suppress
 from datetime import datetime
+from math import ceil
 
 from aiogram import Router, F, types
 from aiogram.types import Message, CallbackQuery, FSInputFile
@@ -13,7 +14,7 @@ from db import Database
 from create_bot import bot
 from helper.helper import clear_messages, log_exception, get_entity_state
 from kb import kb
-from text.text import MSG_USER_WELCOME
+from text.text import MSG_USER_WELCOME, MSG_FINISH_RENT, format_minutes_hhmm
 from config_data.config import Config, load_config
 from services.payments import PaymentService
 
@@ -123,19 +124,15 @@ async def start_rent_finish(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(locker_id=locker_id)
 
-        fin_text = f'⏳ Кінець оренди: Комірка {current_locker[2]} ({station_label}) {inventory_kit[1]}. \n\n' \
-                   '✨ Переконайтесь, що спорядження чисте та неушкоджене перед поверненням.\n' \
-                   '📦 Заберіть всі свої речі з комірки.\n' \
-                   '❗️ Якщо щось пошкоджено або зіпсовано — надішліть фото та коротке повідомлення в 🛟Підтримку\n\n' \
-                   '📍 Поверніть спорядження на місце:\n' \
-                   '🏄‍♂️ Сапборд \n' \
-                   '🚣‍♀️ Весло\n' \
-                   '🦺 Рятувальний жилет\n' \
-                   '📱 Водонепроникний чохол для телефону\n\n' \
-                   f'📸 <strong>Надішліть фото комплекту {inventory_kit[1]} в Комірка {current_locker[2]} ({station_label})</strong>'
+        fin_text = MSG_FINISH_RENT.format(
+            locker_name=current_locker[2],
+            station_label=station_label,
+            kit_name=inventory_kit[1],
+        )
         photo_kit = FSInputFile("media/kit.jpg")
 
-        await bot.send_photo(callback.from_user.id, photo=photo_kit, caption=fin_text, reply_markup=kb.finish_rent_cancel_menu)
+        web_app_base = (config.payment.mono_webhook_public_base or "").strip().rstrip("/")
+        await bot.send_photo(callback.from_user.id, photo=photo_kit, caption=fin_text, reply_markup=kb.finish_rent_cancel_menu(rent_id, web_app_base))
         await state.set_state(RentFinishFSM.waiting_for_photo)
         await callback.answer()
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
@@ -255,12 +252,12 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
 
                 total = int(base_time) + (int(perlimit) * -1 / 4)
 
-                total_time = round(total / 15) * 15
+                total_time = ceil(total / 15) * 15
 
-                if total_time > 240:
+                if total_time > 300:
+                    total_time = 480
+                elif total_time > 240:
                     total_time = 300
-                elif total_time > 300:
-                    total_time = 500
 
                 today = datetime.today()
                 week_day = today.weekday()
@@ -273,6 +270,15 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
                 inventory_kit = db.get_inventory_kit_by_locker_and_station_id(rent[2], locker_id)
                 tariff_type = inventory_kit[4]
                 price = db.get_tariff_by_data(tariff_type, day_type, total_time)
+                if price is None:
+                    price = db.get_max_tariff(tariff_type, day_type)
+                if price is None:
+                    await callback.message.answer(
+                        f"⚠️ Не вдалося знайти тариф для розрахунку доплати. Зверніться до адміністратора.",
+                        reply_markup=kb.user_menu
+                    )
+                    await state.clear()
+                    return
                 price_per_time = price[4]
 
                 fin_pay = int(price_per_time) - int(base_pay)
@@ -311,7 +317,7 @@ async def finish_rent(callback: CallbackQuery, state: FSMContext):
 
                     sent = await callback.message.answer('💰Доплата:\n'
                                                   f'Мабуть, ваша прогулянка була надто крута 😎 Трохи перевищили оренду, тож просимо доплатити {fin_pay} грн 🪙\n'
-                                                  f'⏱️ Загальна тривалість оренди склала {total_time} хв.\n'
+                                                  f'⏱️ Загальна тривалість оренди склала {format_minutes_hhmm(total_time)}\n'
                                                   '⚡️ Після оплати підтвердження відбудеться автоматично.\n'
                                                   '🙌 Дякуємо, що обираєте нас та чекаємо знову!'
                                                   , reply_markup=pay_menu)
