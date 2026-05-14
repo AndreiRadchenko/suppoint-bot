@@ -9,66 +9,104 @@
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--tg-theme-bg-color, #ffffff);
-            color: var(--tg-theme-text-color, #000000);
+            background: #000;
+            color: #fff;
+        }
+
+        /* Camera — full-screen, always the main view */
+        #camera-view {
+            display: flex;
+            position: fixed;
+            inset: 0;
+            flex-direction: column;
+        }
+        #camera-video {
+            flex: 1;
+            width: 100%;
+            min-height: 0;
+            object-fit: cover;
+            display: block;
+        }
+        .camera-controls {
             display: flex;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
-            padding: 24px;
+            gap: 32px;
+            padding: 24px 16px;
+            background: rgba(0,0,0,0.7);
         }
-        .card {
+        #capture-btn {
+            width: 72px;
+            height: 72px;
+            border-radius: 50%;
+            background: #fff;
+            border: 5px solid rgba(255,255,255,0.4);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        #capture-btn:disabled { opacity: 0.4; cursor: default; }
+        #close-btn {
+            color: #fff;
+            background: transparent;
+            border: none;
+            font-size: 28px;
+            cursor: pointer;
+            padding: 8px;
+            width: 44px;
             text-align: center;
-            width: 100%;
-            max-width: 380px;
         }
-        .icon { font-size: 48px; margin-bottom: 12px; }
-        h2 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
-        .hint {
-            font-size: 14px;
-            color: var(--tg-theme-hint-color, #888888);
-            margin-bottom: 28px;
-            line-height: 1.5;
+        #camera-canvas { display: none; }
+
+        /* Status overlay — shown during upload or on error */
+        #status-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 16px;
+            padding: 24px;
+            text-align: center;
         }
+        #status-overlay.visible { display: flex; }
+        #status-text { font-size: 18px; font-weight: 600; }
+        .spinner { display: inline-block; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .btn {
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            width: 100%;
-            padding: 15px;
+            padding: 14px 28px;
             background: var(--tg-theme-button-color, #0088cc);
-            color: var(--tg-theme-button-text-color, #ffffff);
+            color: var(--tg-theme-button-text-color, #fff);
             border: none;
             border-radius: 12px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
-            transition: opacity 0.15s;
         }
-        .btn:disabled { opacity: 0.55; cursor: default; }
-        #status {
-            margin-top: 18px;
-            font-size: 15px;
-            min-height: 22px;
-            line-height: 1.5;
-        }
-        .success { color: #2d9e5f; }
-        .error   { color: #e53935; }
-        .spinner { display: inline-block; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-<div class="card">
-    <div class="icon">📸</div>
-    <h2>Фото комплекту</h2>
-    <p class="hint">Зробіть фото спорядження в комірці перед закриттям дверцят</p>
-    <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none">
-    <button class="btn" id="pick-btn">
-        📷 Сфотографувати
-    </button>
-    <div id="status"></div>
+
+<!-- Camera is the home screen -->
+<div id="camera-view">
+    <video id="camera-video" autoplay playsinline muted></video>
+    <canvas id="camera-canvas"></canvas>
+    <div class="camera-controls">
+        <button id="close-btn" title="Закрити">✕</button>
+        <button id="capture-btn" title="Зробити фото" disabled></button>
+        <div style="width:44px"></div><!-- spacer to centre the shutter -->
+    </div>
+</div>
+
+<!-- Status / error overlay -->
+<div id="status-overlay">
+    <div id="status-text"></div>
+    <button class="btn" id="retry-btn" style="display:none">🔄 Спробувати знову</button>
 </div>
 
 <script>
@@ -76,57 +114,107 @@
     tg.ready();
     tg.expand();
 
-    const params = new URLSearchParams(window.location.search);
-    const rentId = params.get('rent_id') || '';
+    const params  = new URLSearchParams(window.location.search);
+    const rentId  = params.get('rent_id') || '';
 
-    const pickBtn = document.getElementById('pick-btn');
-    const input   = document.getElementById('photo-input');
-    const status  = document.getElementById('status');
+    const cameraVideo   = document.getElementById('camera-video');
+    const cameraCanvas  = document.getElementById('camera-canvas');
+    const captureBtn    = document.getElementById('capture-btn');
+    const closeBtn      = document.getElementById('close-btn');
+    const statusOverlay = document.getElementById('status-overlay');
+    const statusText    = document.getElementById('status-text');
+    const retryBtn      = document.getElementById('retry-btn');
 
-    pickBtn.addEventListener('click', () => input.click());
+    let activeStream = null;
 
-    input.addEventListener('change', async () => {
-        const file = input.files[0];
-        if (!file) return;
+    function showStatus(html, withRetry = false) {
+        statusText.innerHTML = html;
+        retryBtn.style.display = withRetry ? '' : 'none';
+        statusOverlay.classList.add('visible');
+    }
 
-        pickBtn.disabled = true;
-        status.className = '';
-        status.innerHTML = '<span class="spinner">⏳</span> Завантаження...';
+    function hideStatus() {
+        statusOverlay.classList.remove('visible');
+    }
 
-        const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
-        if (file.size > MAX_SIZE) {
-            status.textContent = '❌ Файл завеликий (максимум 10 МБ)';
-            status.className = 'error';
-            pickBtn.disabled = false;
+    async function startCamera() {
+        hideStatus();
+        captureBtn.disabled = true;
+        try {
+            if (!activeStream) {
+                activeStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+                    audio: false,
+                });
+                cameraVideo.srcObject = activeStream;
+            }
+            // Must explicitly call play() — Android WebView does not auto-play on srcObject assignment.
+            try { await cameraVideo.play(); } catch (_) {}
+            captureBtn.disabled = false;
+        } catch (err) {
+            showStatus('📷 Дозвольте доступ до камери і спробуйте ще раз', true);
+        }
+    }
+
+    function stopCamera() {
+        if (activeStream) {
+            activeStream.getTracks().forEach(t => t.stop());
+            activeStream = null;
+        }
+        cameraVideo.srcObject = null;
+        captureBtn.disabled = true;
+    }
+
+    closeBtn.addEventListener('click', () => tg.close());
+    retryBtn.addEventListener('click', startCamera);
+
+    captureBtn.addEventListener('click', () => {
+        const w = cameraVideo.videoWidth  || 1280;
+        const h = cameraVideo.videoHeight || 720;
+        cameraCanvas.width  = w;
+        cameraCanvas.height = h;
+        cameraCanvas.getContext('2d').drawImage(cameraVideo, 0, 0, w, h);
+        // Use synchronous toDataURL so uploadFile is called immediately within the
+        // user-gesture context — Android WebView throttles fetch() from async callbacks.
+        const dataUrl = cameraCanvas.toDataURL('image/jpeg', 0.92);
+        const binary  = atob(dataUrl.split(',')[1]);
+        const bytes   = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        uploadFile(new Blob([bytes], { type: 'image/jpeg' }), 'photo.jpg');
+    });
+
+    async function uploadFile(fileOrBlob, filename) {
+        captureBtn.disabled = true;
+        showStatus('<span class="spinner">⏳</span> Завантаження...');
+
+        const MAX_SIZE = 10 * 1024 * 1024;
+        if (fileOrBlob.size > MAX_SIZE) {
+            showStatus('❌ Файл завеликий (максимум 10 МБ)', true);
             return;
         }
 
         const formData = new FormData();
-        formData.append('photo', file, file.name || 'photo.jpg');
+        formData.append('photo', fileOrBlob, filename);
         formData.append('rent_id', rentId);
         formData.append('init_data', tg.initData);
 
         try {
-            const resp = await fetch('/api/upload-rent-photo', {
-                method: 'POST',
-                body: formData,
-            });
+            const resp   = await fetch('/api/upload-rent-photo', { method: 'POST', body: formData });
             const result = await resp.json();
             if (result.ok) {
-                status.textContent = '✅ Фото надіслано!';
-                status.className = 'success';
+                stopCamera();
+                showStatus('✅ Фото надіслано!');
                 setTimeout(() => tg.close(), 1200);
             } else {
-                status.textContent = '❌ ' + (result.error || 'Помилка');
-                status.className = 'error';
-                pickBtn.disabled = false;
+                showStatus('❌ ' + (result.error || 'Помилка'), true);
             }
         } catch (err) {
-            status.textContent = "❌ Помилка з'єднання";
-            status.className = 'error';
-            pickBtn.disabled = false;
+            showStatus("❌ Помилка з'єднання", true);
         }
-    });
+    }
+
+    // Start camera immediately on load.
+    startCamera();
 </script>
 </body>
 </html>
