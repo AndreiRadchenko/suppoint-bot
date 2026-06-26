@@ -11,6 +11,7 @@ class TgBot:
     admin_ids: list[int]
     ha_url: str
     ha_token: str
+    youtube_instruction_url: str
 
 
 @dataclass
@@ -76,6 +77,7 @@ def load_config(path: str | None = None) -> Config:
             admin_ids=list(map(int, env.list('ADMINS'))),
             ha_url=env.str('HA_URL', default=''),
             ha_token=env.str('HA_TOKEN', default=''),
+            youtube_instruction_url=env.str('YOUTUBE_INSTRUCTION_URL', default=''),
         ),
         db=DatabaseConfig(
             path=env('DB_PATH'),

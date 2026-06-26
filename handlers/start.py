@@ -32,7 +32,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command, StateFilter
 from db import Database
 from aiogram import Bot
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, LinkPreviewOptions
 from datetime import datetime
 from math import ceil
 from aiogram.types.input_file import FSInputFile
@@ -116,7 +116,7 @@ async def start(message: Message):
         if tg_id in config.tg_bot.admin_ids:
             await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
         elif user_exist:
-            await bot.send_message(tg_id, MSG_USER_WELCOME, reply_markup=kb.user_menu)
+            await bot.send_message(tg_id, MSG_USER_WELCOME.format(youtube_url=f"<a href='{config.tg_bot.youtube_instruction_url}'>🎦 Відеоінструкція</a>\n\n" if config.tg_bot.youtube_instruction_url else ""), reply_markup=kb.user_menu, link_preview_options=LinkPreviewOptions(is_disabled=True))
         else:
             await bot.send_message(tg_id, MSG_REGISTER_PROMPT, reply_markup=kb.reg_menu)
         await clear_messages(message.chat.id, message.message_id, 15)
@@ -721,7 +721,7 @@ async def back_to_main_menu(callback: CallbackQuery):
         if tg_id in config.tg_bot.admin_ids:
             await bot.send_message(tg_id, MSG_ADMIN_WELCOME, reply_markup=kb.admin_menu)
         elif user_exist:
-            await bot.send_message(tg_id, MSG_USER_WELCOME, reply_markup=kb.user_menu)
+            await bot.send_message(tg_id, MSG_USER_WELCOME.format(youtube_url=f"<a href='{config.tg_bot.youtube_instruction_url}'>🎥 Відеоінструкція</a>\n\n" if config.tg_bot.youtube_instruction_url else ""), reply_markup=kb.user_menu, link_preview_options=LinkPreviewOptions(is_disabled=True))
         else:
             await bot.send_message(tg_id, MSG_REGISTER_PROMPT, reply_markup=kb.reg_menu)
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)

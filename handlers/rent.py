@@ -11,6 +11,7 @@ from create_bot import bot
 from db import Database
 import base64
 from services.payments import PaymentService
+from text.text import LOCKER_TEXT
 
 config: Config = load_config()
 db = Database(config.db.path)
@@ -74,22 +75,7 @@ async def show_locker_selection(message: Message, state: FSMContext, station_id:
 
     keyboard = kb.rent_locker_keyboard(buttons)
 
-    locker_text = '🏄‍♂️ <strong>Комплект "Стандарт"</strong> - ідеально для однієї особи з базовим багажем\n\n' \
-                  '🌊 Надувна дошка Gladiator Origin 10’6\n' \
-                  '🛶 Регульоване весло Profiplast SUP AluS (180–210 см)\n' \
-                  '🦺 Рятувальний жилет для безпеки на воді\n' \
-                  '📱 Водонепроникний чохол для телефону\n' \
-                  '👤 Рекомендований зріст: від 160 см\n' \
-                  '⚖️ Максимальна вага користувача: до 110 кг\n\n' \
-                  '🌟 <strong>Комплект "Максі"</strong> — більший розмір, краща стійкість при перевезенні  додаткового вантажу\n\n' \
-                  '🌊 Надувна дошка Gladiator Origin 10’8\n' \
-                  '🛶 Регульоване весло Profiplast SUP AluS (190–220 см)\n' \
-                  '🦺 Рятувальний жилет для впевненого катання\n' \
-                  '📱 Водонепроникний чохол для телефону \n' \
-                  '👤 Рекомендований зріст: від 175 см\n' \
-                  '⚖️ Рекомендована вага користувача: понад 85 кг\n\n' \
-                  '📍 <strong>Резервація</strong>:\n' \
-                  ' <strong>Оберіть одну або кілька комірок:</strong>'
+    locker_text = LOCKER_TEXT
 
     if skipped_count:
         locker_text += (

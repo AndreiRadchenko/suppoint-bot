@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton,
-    ReplyKeyboardRemove
+    ReplyKeyboardRemove, LinkPreviewOptions
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -171,7 +171,7 @@ async def confirm_registration(callback: CallbackQuery, state: FSMContext):
         )
 
         await callback.message.answer("🎉 Реєстрація успішна!", reply_markup=ReplyKeyboardRemove())
-        await callback.message.answer(MSG_USER_WELCOME, reply_markup=kb.user_menu)
+        await callback.message.answer(MSG_USER_WELCOME.format(youtube_url=f"<a href='{config.tg_bot.youtube_instruction_url}'>🎥 Відеоінструкція</a>\n\n" if config.tg_bot.youtube_instruction_url else ""), reply_markup=kb.user_menu, link_preview_options=LinkPreviewOptions(is_disabled=True))
         await state.clear()
         await clear_messages(callback.message.chat.id, callback.message.message_id, 15)
     except Exception as e:

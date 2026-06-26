@@ -4,7 +4,7 @@ from datetime import datetime
 from math import ceil
 
 from aiogram import Router, F, types
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, LinkPreviewOptions
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import default_state
 from aiogram.utils.media_group import MediaGroupBuilder
@@ -99,7 +99,7 @@ def generate_bank_qr_url(
 async def start_rent(callback: CallbackQuery, state: FSMContext):
     try:
         await bot.answer_callback_query(callback.id)
-        await callback.message.answer(MSG_USER_WELCOME, reply_markup=kb.user_menu)
+        await callback.message.answer(MSG_USER_WELCOME.format(youtube_url=f"<a href='{config.tg_bot.youtube_instruction_url}'>🎦 Відеоінструкція</a>\n\n" if config.tg_bot.youtube_instruction_url else ""), reply_markup=kb.user_menu, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
         await state.clear()
 
